@@ -50,15 +50,30 @@ jobs:
         shell: pwsh
         run: ./build.ps1 -Version ${{ steps.ver.outputs.version }}
 
-      - name: Install Inno Setup
+      - name: Install Inno Setup 7 (64-bit)
         shell: pwsh
-        run: choco install innosetup -y --no-progress
+        run: |
+          $iscc = Join-Path $env:ProgramFiles 'Inno Setup 7\ISCC.exe'
+          if (-not (Test-Path -LiteralPath $iscc)) {
+            winget install --id JRSoftware.InnoSetup.7 --exact --source winget `
+              --silent --accept-package-agreements --accept-source-agreements `
+              --disable-interactivity
+          }
+          if (-not (Test-Path -LiteralPath $iscc)) {
+            throw "Inno Setup 7 compiler was not found at '$iscc'."
+          }
+          $compilerBanner = (& $iscc /? 2>&1 | Select-Object -First 1)
+          if ($compilerBanner -notmatch '^Inno Setup 7 ') {
+            throw "Expected Inno Setup 7, found '$compilerBanner'."
+          }
+          Write-Host $compilerBanner
+          "INNO_ISCC=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Append
 
-      - name: Build installer
+      - name: Build 64-bit installer
         shell: pwsh
         run: |
           $ver = '${{ steps.ver.outputs.version }}'
-          iscc "/DAppVersion=$ver" packaging\installer.iss
+          & $env:INNO_ISCC "/DAppVersion=$ver" packaging\installer.iss
           if (-not (Test-Path "packaging\Output\jenv-windows-$ver-setup.exe")) {
             throw "Installer was not produced."
           }

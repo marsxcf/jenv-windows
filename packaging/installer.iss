@@ -26,7 +26,7 @@ AppName=jenv-windows
 AppVersion={#AppVersion}
 AppPublisher=jenv-windows contributors
 AppPublisherURL=https://github.com/marsxcf/jenv-windows
-AppLicenseFile=..\LICENSE
+LicenseFile=..\LICENSE
 DefaultDirName={localappdata}\Programs\jenv-windows
 DefaultGroupName=jenv-windows
 DisableProgramGroupPage=yes
@@ -36,8 +36,11 @@ PrivilegesRequiredOverridesAllowed=dialog
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
-ArchitecturesAllowed=x64compatible arm64
-ArchitecturesInstallIn64BitMode=x64compatible arm64
+; Inno Setup 7 builds 32-bit installers by default even when the 64-bit
+; compiler is used. Explicitly produce an x64 installer. x64compatible also
+; permits Windows 11 on Arm64, where x64 applications run under emulation.
+SetupArchitecture=x64
+ArchitecturesAllowed=x64compatible
 OutputBaseFilename=jenv-windows-{#AppVersion}-setup
 OutputDir=Output
 UninstallDisplayName=jenv-windows {#AppVersion}
@@ -55,15 +58,15 @@ Source: "{#SourceDir}\*"; DestDir: "{app}\JEnv"; Flags: recursesubdirs ignorever
 [Run]
 ; Install the module into the CurrentUser module path and hook the profile.
 ; -ExecutionPolicy Bypass so the one-shot installer line can run unsigned.
-Filename: "pwsh.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""$ErrorActionPreference='Stop'; $base=($env:PSModulePath -split ';' | Where-Object { $_ -and [IO.Path]::GetFullPath($_).StartsWith([IO.Path]::GetFullPath($HOME), [StringComparison]::OrdinalIgnoreCase) } | Select-Object -First 1); if(-not $base){$base=Join-Path $HOME 'Documents\PowerShell\Modules'}; $dest=Join-Path $base ('JEnv\{#AppVersion}'); if(Test-Path -LiteralPath $dest){Remove-Item -Recurse -Force -LiteralPath $dest}; New-Item -ItemType Directory -Force -Path $dest | Out-Null; Get-ChildItem -LiteralPath '{app}\JEnv' -Force | Copy-Item -Destination $dest -Recurse -Force; Import-Module JEnv -Force; jenv init --install"""; \
+Filename: "pwsh.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""$ErrorActionPreference='Stop'; $base=($env:PSModulePath -split ';' | Where-Object {{ $_ -and [IO.Path]::GetFullPath($_).StartsWith([IO.Path]::GetFullPath($HOME), [StringComparison]::OrdinalIgnoreCase) } | Select-Object -First 1); if(-not $base){{$base=Join-Path $HOME 'Documents\PowerShell\Modules'}; $dest=Join-Path $base ('JEnv\{#AppVersion}'); if(Test-Path -LiteralPath $dest){{Remove-Item -Recurse -Force -LiteralPath $dest}; New-Item -ItemType Directory -Force -Path $dest | Out-Null; Get-ChildItem -LiteralPath '{app}\JEnv' -Force | Copy-Item -Destination $dest -Recurse -Force; Import-Module JEnv -Force; jenv init --install"""; \
   StatusMsg: "Installing JEnv module and hooking your PowerShell profile..."; \
   Flags: runhidden
 
 [UninstallRun]
 ; Remove the profile hook first (restores the original prompt/env), then delete
 ; the module. versions.json under %USERPROFILE%\.jenv is intentionally preserved.
-Filename: "pwsh.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""try { Import-Module JEnv -ErrorAction Stop; jenv init --uninstall } catch { }; $base=($env:PSModulePath -split ';' | Where-Object { $_ -and [IO.Path]::GetFullPath($_).StartsWith([IO.Path]::GetFullPath($HOME), [StringComparison]::OrdinalIgnoreCase) } | Select-Object -First 1); if($base){ Remove-Item -Recurse -Force -LiteralPath (Join-Path $base 'JEnv\{#AppVersion}') -ErrorAction SilentlyContinue }"""; \
-  Flags: runhidden
+Filename: "pwsh.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""try {{ Import-Module JEnv -ErrorAction Stop; jenv init --uninstall } catch {{ }; $base=($env:PSModulePath -split ';' | Where-Object {{ $_ -and [IO.Path]::GetFullPath($_).StartsWith([IO.Path]::GetFullPath($HOME), [StringComparison]::OrdinalIgnoreCase) } | Select-Object -First 1); if($base){{ Remove-Item -Recurse -Force -LiteralPath (Join-Path $base 'JEnv\{#AppVersion}') -ErrorAction SilentlyContinue }"""; \
+  Flags: runhidden; RunOnceId: "JEnvUninstallProfileAndModule"
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}"
