@@ -2,7 +2,8 @@
 #
 # At release time the GitHub Actions workflow (.github/workflows/release.yml)
 # renders this into the final manifest, filling in PackageVersion, InstallerUrl
-# and InstallerSha256, then opens a PR to microsoft/winget-pkgs.
+# and InstallerSha256. The first generated manifest is submitted manually to
+# microsoft/winget-pkgs; automated updates can be enabled after that.
 #
 # Submission: https://learn.microsoft.com/en-us/windows/package-manager/package/repository
 # Validate locally:   winget validate <rendered.yaml>
@@ -10,6 +11,8 @@
 #
 # First release is a manual PR to winget-pkgs (new PackageIdentifier). Later
 # versions can be automated via the winget-pkgs-automation action.
+
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.singleton.1.12.0.schema.json
 
 PackageIdentifier: jenv-windows.jenv-windows
 PackageVersion: __VERSION__
@@ -41,6 +44,14 @@ Tags:
   - Windows
   - JavaVersion
 
+Commands:
+  - jenv
+
+Dependencies:
+  PackageDependencies:
+    - PackageIdentifier: Microsoft.PowerShell
+      MinimumVersion: 7.4.0
+
 Installers:
   - Architecture: x64
     InstallerType: inno
@@ -50,5 +61,5 @@ Installers:
     UpgradeBehavior: install
     ProductCode: '{585CEFF5-B3E1-4F24-AD94-412EB1073E5E}_is1'
 
-ManifestType: merged
-ManifestVersion: 1.6.0
+ManifestType: singleton
+ManifestVersion: 1.12.0
