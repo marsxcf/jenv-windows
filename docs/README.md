@@ -1,30 +1,30 @@
-# jenv-windows 技术文档
+# jenv-windows Technical Documentation
 
-本文档集定义 `jenv-windows` 的产品边界、技术架构、命令行为、持久化格式、实现约束和验收标准。它是 0.1 版本开发与评审的基准。
+This documentation set defines the product boundaries, technical architecture, command behavior, persistence formats, implementation constraints, and acceptance criteria for `jenv-windows`. It is the baseline for developing and reviewing version 0.1.
 
-## 文档导航
+## Documentation
 
-- [总体架构](./architecture.md)：目标、边界、组件、关键流程和技术决策。
-- [命令行规范](./command-reference.md)：完整命令、参数、输出和错误行为。
-- [配置、存储与版本解析](./storage-and-resolution.md)：目录布局、JSON 模式、优先级和原子写入。
-- [PowerShell 会话集成](./powershell-integration.md)：环境变量、PATH、Profile 和自动切换。
-- [开发规范与实施计划](./development.md)：代码布局、模块 API、安全约束和开发阶段。
-- [测试与验收](./testing.md)：测试矩阵、关键用例、CI 和发布门槛。
+- [Overall Architecture](./architecture.md): Goals, boundaries, components, key flows, and technical decisions.
+- [Command Reference](./command-reference.md): Complete command, argument, output, and error behavior.
+- [Configuration, Storage, and Version Resolution](./storage-and-resolution.md): Directory layout, JSON schema, precedence, and atomic writes.
+- [PowerShell Session Integration](./powershell-integration.md): Environment variables, `PATH`, profiles, and automatic switching.
+- [Development Guide and Implementation Plan](./development.md): Code layout, module API, security constraints, and development phases.
+- [Testing and Acceptance](./testing.md): Test matrix, critical cases, CI, and release gates.
 
-## 产品定位
+## Product Scope
 
-`jenv-windows` 是面向 Windows PowerShell 7 的 JDK 版本选择器。它管理已经安装在本机上的 JDK，但不下载、不安装也不升级 JDK。
+`jenv-windows` is a JDK version selector for Windows PowerShell 7. It manages JDKs that are already installed on the local machine; it does not download, install, or upgrade them.
 
-它提供三层版本选择：
+It provides three configuration layers:
 
 ```text
-shell（当前 pwsh 会话）
-        > local（当前目录或父目录的 .java-version）
-        > global（当前用户默认版本）
-        > system（jenv 初始化前的环境）
+shell (current pwsh session)
+        > local (.java-version in the current or a parent directory)
+        > global (current user's default version)
+        > system (environment before jenv initialization)
 ```
 
-选择某个 JDK 后，工具在当前 PowerShell 进程中设置：
+After selecting a JDK, the tool sets the following values in the current PowerShell process:
 
 ```powershell
 $env:JAVA_HOME = $SelectedJdkHome
@@ -32,79 +32,79 @@ $env:JDK_HOME = $SelectedJdkHome
 $env:Path = "$SelectedJdkHome\bin;$env:Path"
 ```
 
-实际实现必须安全移除上一次由 jenv 注入的 `bin` 路径，不能让 `PATH` 随切换次数增长。
+The implementation must safely remove the `bin` path previously inserted by jenv so that `PATH` does not grow after repeated switches.
 
-## 支持范围
+## Supported Environments
 
-0.1 版本支持：
+Version 0.1 supports:
 
-- Windows 10/11 和 Windows Server 上的 PowerShell 7.4 或更高版本。
-- PowerShell Core（`PSEdition = Core`）。
-- x64、ARM64 PowerShell；被注册 JDK 的架构只记录和展示，不限制宿主架构。
-- 当前 PowerShell 进程级环境变量。
-- `.java-version` 项目文件。
-- 用户级全局配置，默认位于 `%USERPROFILE%\.jenv`。
-- 路径中包含空格、Unicode 字符和不同大小写。
+- PowerShell 7.4 or later on Windows 10/11 and Windows Server.
+- PowerShell Core (`PSEdition = Core`).
+- x64 and ARM64 PowerShell. A registered JDK's architecture is recorded and displayed but is not restricted to the host architecture.
+- Process-level environment variables in the current PowerShell session.
+- Project-level `.java-version` files.
+- Per-user global configuration, stored in `%USERPROFILE%\.jenv` by default.
+- Paths containing spaces, Unicode characters, and mixed case.
 
-0.1 版本不支持：
+Version 0.1 does not support:
 
-- Windows PowerShell 5.1。
-- `cmd.exe`、Git Bash、WSL、Cygwin 或其他 shell。
-- 修改 User 或 Machine 级 `JAVA_HOME`/`PATH`。
-- JDK 下载、安装和自动升级。
-- macOS、Linux。
-- Java 命令 shim 或代理可执行文件。
-- 上游 jenv 插件系统。
+- Windows PowerShell 5.1.
+- `cmd.exe`, Git Bash, WSL, Cygwin, or other shells.
+- Modifying `JAVA_HOME` or `PATH` at User or Machine scope.
+- Downloading, installing, or automatically upgrading JDKs.
+- macOS or Linux.
+- Java command shims or proxy executables.
+- The upstream jenv plugin system.
 
-Windows Terminal 是终端宿主而不是 shell；当其 Profile 使用 PowerShell 7 时即受支持。
+Windows Terminal is a terminal host, not a shell. It is supported when its profile runs PowerShell 7.
 
-## 快速使用场景
+## Quick Start
 
 ```powershell
-# 导入并初始化当前会话
+# Import the module and initialize the current session
 Import-Module JEnv
 jenv init
 
-# 注册已经安装的 JDK
+# Register JDKs that are already installed
 jenv add 'D:\SDKs\amazon-corretto-8' --alias corretto8
 jenv add 'D:\SDKs\temurin-17' --alias temurin17
 
-# 设置默认版本
+# Set the default version
 jenv global temurin17
 
-# 在项目目录固定 Java 8
+# Pin Java 8 in a project directory
 Set-Location D:\Work\legacy-app
 jenv local corretto8
 
-# 仅在当前 pwsh 会话临时覆盖
+# Temporarily override the version in the current pwsh session only
 jenv shell temurin17
 jenv shell --unset
 
-# 查看选择结果
+# Inspect the selection
 jenv current
 $env:JAVA_HOME
 java -version
 ```
 
-## 术语
+## Terminology
 
-| 术语 | 定义 |
+| Term | Definition |
 | --- | --- |
-| JDK home | 同时包含 `bin\java.exe` 和 `bin\javac.exe` 的目录。 |
-| 注册 | 记录已有 JDK 的绝对路径及其版本、厂商、架构和别名。 |
-| 版本表达式 | 可解析到某个已注册 JDK 的 ID 或别名，例如 `17`、`temurin17`。 |
-| canonical ID | 注册记录的稳定唯一标识，例如 `corretto64-1.8.0.442`。 |
-| origin | 当前版本选择来自 shell、某个 `.java-version`、global 文件或 system。 |
-| managed bin | 当前由 jenv 添加到 `PATH` 首位的 JDK `bin` 目录。 |
-| system | 不选择已注册 JDK，并尽可能恢复 jenv 初始化前的 Java 环境。 |
+| JDK home | A directory containing both `bin\java.exe` and `bin\javac.exe`. |
+| Registration | Recording an existing JDK's absolute path, version, vendor, architecture, and aliases. |
+| Version expression | An ID or alias that resolves to a registered JDK, such as `17` or `temurin17`. |
+| Canonical ID | The stable, unique identifier of a registration, such as `corretto64-1.8.0.442`. |
+| Origin | The source of the current selection: shell, a `.java-version` file, the global file, or system. |
+| Managed bin | The JDK `bin` directory currently placed at the beginning of `PATH` by jenv. |
+| System | No registered JDK is selected, and jenv restores the Java environment that existed before initialization whenever possible. |
 
-## 规范优先级
+## Specification Precedence
 
-文档之间出现冲突时，优先级如下：
+If documents conflict, use this order of precedence:
 
-1. [命令行规范](./command-reference.md)定义用户可观察行为。
-2. [配置、存储与版本解析](./storage-and-resolution.md)定义持久化与解析行为。
-3. [PowerShell 会话集成](./powershell-integration.md)定义会话修改行为。
-4. [总体架构](./architecture.md)和其他文档提供设计背景。
+1. The [Command Reference](./command-reference.md) defines user-observable behavior.
+2. [Configuration, Storage, and Version Resolution](./storage-and-resolution.md) defines persistence and resolution behavior.
+3. [PowerShell Session Integration](./powershell-integration.md) defines session mutation behavior.
+4. [Overall Architecture](./architecture.md) and the remaining documents provide design context.
 
-实现改变任何对外行为或持久化格式时，必须在同一变更中更新相应文档。
+Any implementation change that affects public behavior or a persistence format must update the corresponding documentation in the same change.

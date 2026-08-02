@@ -1,25 +1,21 @@
-# PowerShell 会话集成
+# PowerShell Session Integration
 
-## 1. 设计目标
+## 1. Design Goals
 
-会话集成把版本解析结果应用到当前 PowerShell 7 进程，同时满足：
+Session integration applies a resolution result to the current PowerShell 7 process while ensuring that:
 
-- 切换立即影响之后启动的 `java`、`javac`、Maven、Gradle 和其他子进程。
-- 重复切换不产生重复 `PATH` 项。
-- 不覆盖其他工具在 jenv 初始化后对 `PATH` 的无关修改。
-- system 状态尽可能恢复初始化前的 Java 环境。
-- 自动切换不依赖覆盖 `Set-Location`、`Push-Location` 或 `Pop-Location`。
-- 初始化、刷新和卸载均幂等。
+- switches immediately affect subsequently launched Java, Maven, Gradle, and other child processes;
+- repeated switches do not duplicate `PATH` entries;
+- unrelated `PATH` changes made after initialization are preserved;
+- system restores the pre-initialization Java environment whenever possible;
+- automatic switching does not override location cmdlets; and
+- initialization, refresh, and uninstall are idempotent.
 
-## 2. 为什么必须使用 PowerShell 模块
+## 2. Why a PowerShell Module Is Required
 
-Windows `.exe` 或新启动的 `pwsh` 进程只能继承父进程环境，无法反向修改已经运行的父 PowerShell。因此：
+A Windows executable or newly launched `pwsh` can inherit its parent's environment but cannot modify the already running parent. Therefore, commands that change selections must synchronize inside the current process, `jenv` must be a PowerShell function, and emitting code for the user to run through `Invoke-Expression` is not an acceptable primary interface.
 
-- `jenv shell`、`jenv local`、`jenv global` 和 `jenv refresh` 必须最终在当前进程调用环境同步函数。
-- 用户入口 `jenv` 必须是当前会话中的 PowerShell 函数。
-- 不能把“输出一段 PowerShell 后让用户 `Invoke-Expression`”作为主要接口。
-
-模块清单最低要求：
+Minimum manifest requirements:
 
 ```powershell
 @{
@@ -30,239 +26,153 @@ Windows `.exe` 或新启动的 `pwsh` 进程只能继承父进程环境，无法
 }
 ```
 
-模块加载时还必须检查 `$IsWindows`，因为 `PSEdition = Core` 本身不限制操作系统。
+Module loading must also check `$IsWindows` because `PSEdition = Core` does not restrict the operating system.
 
-## 3. 初始化生命周期
+## 3. Initialization Lifecycle
 
 ### 3.1 `Import-Module JEnv`
 
-导入只执行：
-
-- 加载公有和私有函数。
-- 注册模块移除回调。
-- 校验基础运行时要求。
-
-导入不得：
-
-- 创建 `$JENV_ROOT`。
-- 读取或修改 PowerShell Profile。
-- 修改 `JAVA_HOME`、`JDK_HOME` 或 `PATH`。
-- 安装 prompt hook。
+Import loads public/private functions, registers an `OnRemove` callback, and validates runtime requirements. It must not create `$JENV_ROOT`, read or edit the PowerShell profile, modify Java environment variables, or install a prompt hook.
 
 ### 3.2 `Initialize-Jenv` / `jenv init`
 
-第一次初始化：
+On first initialization:
 
-1. 捕获 `JAVA_HOME` 和 `JDK_HOME` 是否存在及原始值。
-2. 创建模块会话状态。
-3. 忽略缓存执行一次完整解析。
-4. 将解析结果应用到当前进程。
-5. 在交互式会话安装 prompt hook。
-6. 标记为已初始化。
+1. Capture whether `JAVA_HOME` and `JDK_HOME` exist and their values.
+2. Create module session state.
+3. Perform uncached full resolution.
+4. Apply the result to the current process.
+5. Install the prompt hook in interactive sessions.
+6. Mark the module initialized.
 
-重复初始化：
+Repeated initialization does not recapture a jenv-managed environment as the original or wrap the prompt again; it performs one refresh and succeeds. If resolution or application fails, do not install the hook, keep initialization false, and roll back partial changes.
 
-- 不重新捕获已经被 jenv 修改后的环境作为“原始环境”。
-- 不重复包装 prompt。
-- 执行一次 `refresh`，然后成功返回。
+### 3.3 Module Removal
 
-如果第 3 或第 4 步失败，不安装 prompt hook，初始化状态保持为 false，并恢复已经发生的局部环境修改。
+The module's `OnRemove` callback restores the saved prompt only if the global prompt is still jenv's hook, removes the managed bin, restores `JAVA_HOME` and `JDK_HOME` under the ownership rules, and clears session state. It never modifies the profile; only `jenv init --uninstall` removes the managed block.
 
-### 3.3 模块移除
+## 4. Environment Ownership Model
 
-模块 `OnRemove` 回调：
-
-1. 如果当前全局 `prompt` 仍是 jenv 安装的 hook，恢复初始化时保存的 prompt。
-2. 如果 prompt 已被其他工具替换，不覆盖它。
-3. 从 `PATH` 删除 managed bin。
-4. 采用所有权规则恢复 `JAVA_HOME` 和 `JDK_HOME`。
-5. 清除模块会话状态。
-
-移除模块不修改 Profile；Profile 托管块只能通过 `jenv init --uninstall` 删除。
-
-## 4. 环境所有权模型
-
-PowerShell 环境变量属于进程，不具有模块作用域。jenv 因此记录自己最后写入的值，避免在恢复时覆盖用户或其他工具的后续修改。
-
-初始化时记录：
+Process environment variables have no module scope. To avoid overwriting later changes by a user or another tool, jenv records:
 
 ```text
-OriginalJavaHome.Exists
-OriginalJavaHome.Value
-OriginalJdkHome.Exists
-OriginalJdkHome.Value
-```
-
-每次同步记录：
-
-```text
+OriginalJavaHome.Exists / .Value
+OriginalJdkHome.Exists  / .Value
 ManagedJavaHome
 ManagedJdkHome
 ManagedBin
 ```
 
-恢复规则：
+Restore `JAVA_HOME` only when its current value still equals `ManagedJavaHome`; then restore the original value or delete the variable if it was originally absent. Otherwise, treat the current value as externally owned. Apply the same rule independently to `JDK_HOME`.
 
-- 当前 `JAVA_HOME` 仍等于 `ManagedJavaHome` 时，恢复原值或删除变量。
-- 当前值已经不同，视为调用者主动接管，不修改。
-- `JDK_HOME` 使用相同规则。
-- `PATH` 只移除与 `ManagedBin` 规范化后相等的项，不恢复整条初始化前的 PATH。
+For `PATH`, remove only entries that normalize equal to `ManagedBin`; never restore the complete old `PATH`, which would discard later additions from Node, Python, virtual environments, or users.
 
-不能通过保存并整体恢复旧 PATH 实现 system，因为这会删除模块初始化后由 Node、Python、虚拟环境或用户添加的路径。
+## 5. PATH Management Algorithm
 
-## 5. PATH 管理算法
+### 5.1 Path Normalization
 
-### 5.1 路径规范化
+For comparisons, preserve empty values without matching them, normalize nonempty values with `[IO.Path]::GetFullPath()`, remove trailing separators not required for a root, and compare with `StringComparer.OrdinalIgnoreCase`. Do not rely exclusively on `Resolve-Path`, because an old managed bin may no longer exist.
 
-用于比较的路径键：
+### 5.2 Switching to a Managed JDK
 
-1. 如果值为空，保留为空且永不匹配 managed bin。
-2. 使用 `[IO.Path]::GetFullPath()` 规范化。
-3. 移除非根目录所必需的尾部 `\` 或 `/`。
-4. 使用 `StringComparer.OrdinalIgnoreCase` 比较。
-
-不要使用 `Resolve-Path` 作为唯一规范化手段，因为旧 managed bin 在 JDK 被移动后可能已经不存在。
-
-### 5.2 切换到受管理 JDK
-
-设目标目录为 `$targetBin = Join-Path $jdk.Home 'bin'`：
+For `$targetBin = Join-Path $jdk.Home 'bin'`:
 
 ```text
-读取当前 Path
-  → 按 [IO.Path]::PathSeparator 拆分
-  → 删除所有等于旧 ManagedBin 的项
-  → 删除所有等于 targetBin 的项
-  → 保持其他项的原顺序和值
-  → 将 targetBin 放到首位
-  → 使用 PathSeparator 连接
+read current Path
+  → split on [IO.Path]::PathSeparator
+  → remove every entry matching old ManagedBin
+  → remove every entry matching targetBin
+  → preserve all other values and their order
+  → prepend targetBin
+  → join with PathSeparator
 ```
 
-随后设置：
+Then set `JAVA_HOME`, `JDK_HOME`, and `Path`. Update module `Managed*` state only after all assignments succeed. On failure, restore all three variables to their values at call entry.
 
-```powershell
-$env:JAVA_HOME = $jdk.Home
-$env:JDK_HOME  = $jdk.Home
-$env:Path      = $newPath
-```
+Empty `PATH` entries may represent the current directory and must remain. Do not globally deduplicate, sort, or existence-filter entries other than the managed bin.
 
-最后才更新模块中的 `Managed*` 状态。任何一步失败时应恢复本次调用开始时的三个环境变量。
+### 5.3 Switching to System
 
-空 PATH 项可能代表当前目录语义，模块不负责清理；除 managed bin 外不做全局去重、排序或存在性过滤。
+Remove `ManagedBin` from the current path, restore the two home variables using the ownership rules, then clear `Managed*` state. System means the Java environment inherited before initialization; do not infer `JAVA_HOME` from the registry or `Get-Command java`.
 
-### 5.3 切换到 system
+### 5.4 Idempotency
 
-```text
-从当前 Path 删除 ManagedBin
-  → 按所有权规则恢复 JAVA_HOME
-  → 按所有权规则恢复 JDK_HOME
-  → 清空 Managed* 状态
-```
+If both the target canonical ID and environment are unchanged, do not rewrite `PATH`. Repeating `jenv refresh` or `Initialize-Jenv` must not alter the final result.
 
-system 表示恢复初始化时继承的 Java 环境，不尝试从注册表或 `Get-Command java` 推断 `JAVA_HOME`。
+## 6. Prompt Hook
 
-### 5.4 幂等性
+### 6.1 Responsibilities
 
-目标 canonical ID 和环境均未变化时，同步不重写 PATH。以下操作必须不改变最终结果：
-
-```powershell
-jenv refresh
-jenv refresh
-Initialize-Jenv
-Initialize-Jenv
-```
-
-## 6. prompt hook
-
-### 6.1 职责
-
-PowerShell 在显示下一次提示符前调用全局 `prompt` 函数。jenv 包装当前 prompt：
+PowerShell calls global `prompt` before displaying each prompt. jenv wraps it:
 
 ```text
 jenv prompt hook
-  → 静默检查解析指纹
-  → 指纹变化时 Sync-JenvEnvironment
-  → 调用初始化时保存的原 prompt
-  → 原样返回原 prompt 的输出
+  → silently check the resolution fingerprint
+  → call Sync-JenvEnvironment when it changes
+  → invoke the prompt saved at initialization
+  → return its output unchanged
 ```
 
-hook 不得向成功输出流写入任何内容，否则会污染提示符。
+The hook must not write to the success stream.
 
-### 6.2 安装安全
+### 6.2 Installation Safety
 
-- 保存的是当前 `Function:\global:prompt` 的 ScriptBlock，不保存函数名称字符串。
-- hook ScriptBlock 必须能访问模块内部同步函数，但不能依赖用户当前作用域中的临时变量。
-- 用引用身份或模块生成的唯一标记判断当前 prompt 是否仍是自己的 hook。
-- 重复初始化检测到 hook 已安装时直接复用。
-- 原 prompt 抛错时不吞掉错误，也不能递归调用自身。
+- Save the current `Function:\global:prompt` ScriptBlock, not its function-name string.
+- The hook must access internal synchronization without depending on temporary variables in the user's scope.
+- Identify the hook by reference identity or a module-generated unique marker.
+- Reuse an existing hook during repeated initialization.
+- Propagate errors from the original prompt and never recurse into itself.
 
-### 6.3 与主题工具的关系
+### 6.3 Theme Tools
 
-Oh My Posh、Starship 或其他主题也可能替换 `prompt`。推荐 Profile 顺序：
+Oh My Posh, Starship, and similar tools may replace `prompt`. Recommended profile order:
 
 ```powershell
-# 先初始化提示符主题
+# Initialize the prompt theme first
 oh-my-posh init pwsh --config $Theme | Invoke-Expression
 
-# 再让 jenv 包装最终 prompt
+# Then let jenv wrap the final prompt
 Import-Module JEnv
 Initialize-Jenv
 ```
 
-此处 `Invoke-Expression` 属于主题工具自己的官方初始化输出，不是 jenv 用来处理配置或参数的机制。
+Here `Invoke-Expression` belongs to the theme's own initialization and is not used by jenv to process configuration or arguments.
 
-如果主题在 jenv 之后替换 prompt：
+If a theme replaces the prompt after jenv, the current environment remains, automatic directory switching stops, `jenv refresh` still works, and `jenv doctor` reports a PromptHook warning with a suggestion to rerun `Initialize-Jenv`.
 
-- 当前环境保持不变。
-- 自动目录切换停止。
-- `jenv refresh` 继续正常工作。
-- `jenv doctor` 对 PromptHook 给出 WARN，并建议重新运行 `Initialize-Jenv`。
+### 6.4 Why Location Commands Are Not Wrapped
 
-### 6.4 为什么不覆盖目录命令
+Version 0.1 does not proxy `Set-Location`, `cd`, `Push-Location`, or `Pop-Location`; faithfully reproducing all parameter sets, providers, pipeline behavior, and errors is risky. The prompt hook covers normal interactive use. Scripts use `jenv exec` or an explicit `jenv refresh`.
 
-0.1 不代理 `Set-Location`、`cd`、`Push-Location` 或 `Pop-Location`，原因是完整复制这些 cmdlet 的参数集、Provider 行为、管道语义和错误语义风险较高。prompt hook 覆盖标准交互式切换，脚本使用 `jenv exec` 或显式 `jenv refresh`。
+## 7. Profile Integration
 
-## 7. Profile 集成
+### 7.1 Target Profile
 
-### 7.1 目标 Profile
+Operate only on `$PROFILE.CurrentUserAllHosts`. Never hardcode `Documents\PowerShell`, because Documents may be redirected and the host supplies the correct path.
 
-只操作当前 PowerShell 7 提供的：
+### 7.2 Installation Algorithm
 
-```powershell
-$PROFILE.CurrentUserAllHosts
-```
+`jenv init --install`:
 
-不能硬编码 `Documents\PowerShell`，因为 Documents 可能被重定向，且宿主负责提供正确路径。
+1. Obtain the actual profile path.
+2. If it exists, detect encoding, newlines, and Authenticode signature.
+3. Make no change when exactly one complete managed block exists.
+4. Fail on an unmatched marker or multiple blocks.
+5. Refuse to edit a valid signed profile by default; instruct the user to edit and re-sign it manually.
+6. Create a missing parent directory.
+7. Append a newline and the managed block.
+8. Atomically replace through a same-directory temporary file and create a backup.
+9. Initialize the current session.
 
-### 7.2 安装算法
+New files use UTF-8 without BOM. Existing files retain their BOM and CRLF/LF style whenever possible.
 
-`jenv init --install`：
+### 7.3 Uninstallation Algorithm
 
-1. 读取 `$PROFILE.CurrentUserAllHosts` 的实际路径。
-2. 如果文件存在，检测编码、换行和 Authenticode 签名。
-3. 已有一个完整托管块时不修改文件。
-4. 发现单侧标记或多个托管块时失败。
-5. 有有效签名的 Profile 默认失败，避免使签名失效；提示用户手工添加并重新签名。
-6. 不存在时创建父目录。
-7. 在文件末尾追加一个换行和托管块。
-8. 使用同目录临时文件原子替换，并生成备份。
-9. 初始化当前会话。
+`jenv init --uninstall` removes exactly the marked block and one adjacent blank line added during installation. It preserves all other bytes and newline style, succeeds idempotently when the block is absent, and fails without fuzzy deletion when markers are malformed. It also removes the current prompt hook and restores the Java environment. It does not call `Remove-Module`, allowing the command to report its result.
 
-写入新文件统一使用无 BOM UTF-8；修改已有文件时尽量保留其 BOM 和 CRLF/LF 风格。
+## 8. `exec` Environment Isolation
 
-### 7.3 卸载算法
-
-`jenv init --uninstall`：
-
-- 精确删除包含起止标记的整个托管块以及由安装产生的一个相邻空行。
-- 保留文件其他字节和换行风格。
-- 托管块不存在时幂等成功。
-- 标记损坏时失败，不做模糊删除。
-- 从当前会话移除 jenv prompt hook并恢复 Java 环境。
-- 不执行 `Remove-Module`，以便命令可以输出卸载结果。
-
-## 8. `exec` 的环境隔离
-
-PowerShell 的 `$env:*` 是进程级状态，即使在子作用域赋值也不会自动恢复，因此 `jenv exec` 必须显式保存和恢复：
+Assignments to `$env:*` remain process-wide even in a child scope, so `jenv exec` explicitly saves and restores state:
 
 ```powershell
 $snapshot = Save-JenvProcessEnvironment
@@ -275,20 +185,18 @@ finally {
 }
 ```
 
-快照至少记录 `JAVA_HOME`、`JDK_HOME`、`Path` 的存在性和值。恢复发生在 `finally` 中，包括命令抛错和用户中断场景。
+The snapshot records existence and value for `JAVA_HOME`, `JDK_HOME`, and `Path`. Restoration in `finally` also covers exceptions and interruption. Temporary execution must not update interactive `Managed*` state or the resolution cache. Nested calls restore naturally through stacked snapshots.
 
-`exec` 的临时环境不得更新交互会话的 `Managed*` 状态或解析缓存。嵌套 `jenv exec` 通过栈式快照自然恢复。
+## 9. Non-interactive Use
 
-## 9. 非交互式使用
-
-CI 或脚本可以不调用 `Initialize-Jenv`：
+CI and scripts may skip initialization:
 
 ```powershell
 Import-Module JEnv
 jenv exec --version 17 -- .\gradlew.bat test
 ```
 
-如果脚本希望后续多条命令共享环境，可以显式执行：
+For several commands sharing one environment:
 
 ```powershell
 Import-Module JEnv
@@ -297,11 +205,11 @@ java -version
 .\mvnw.cmd verify
 ```
 
-`jenv shell` 在未先调用 `init` 时应隐式创建会话状态并捕获原环境，但不安装 prompt hook；只有 `Initialize-Jenv` 安装 hook。
+If `jenv shell` runs before `init`, create session state and capture the original environment implicitly, but do not install a prompt hook. Only `Initialize-Jenv` installs it.
 
-## 10. PowerShell API 设计
+## 10. PowerShell API Design
 
-建议导出：
+Recommended exports:
 
 ```text
 jenv
@@ -318,9 +226,9 @@ Invoke-JenvCommand
 Test-JenvInstallation
 ```
 
-高级函数应使用 `[CmdletBinding()]`、支持 `-Verbose`，修改配置的函数支持 `-WhatIf` 和 `-Confirm`。`jenv` facade 将双连字符参数映射到这些高级函数，但内部函数不重新解析原始命令字符串。
+Advanced functions use `[CmdletBinding()]` and support `-Verbose`; configuration mutations support `-WhatIf` and `-Confirm`. The facade maps double-dash arguments to these functions, while internal functions never reparse raw command strings.
 
-## 11. 会话验收示例
+## 11. Session Acceptance Example
 
 ```powershell
 Import-Module JEnv
@@ -334,8 +242,8 @@ jenv shell 17
 $env:JAVA_HOME                         # D:\SDKs\temurin-17
 ($env:Path -split ';')[0]              # D:\SDKs\temurin-17\bin
 
-jenv shell --unset                     # 重新采用 local/global/system
+jenv shell --unset                     # Resolve local/global/system again
 jenv refresh
 ```
 
-任意次数切换后，之前的 managed bin 不得残留在 PATH 中。
+No previous managed bin may remain in `PATH`, regardless of the number of switches.

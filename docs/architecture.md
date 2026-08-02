@@ -1,51 +1,51 @@
-# 总体架构
+# Overall Architecture
 
-## 1. 目标
+## 1. Goals
 
-`jenv-windows` 需要在 PowerShell 7 中完成以下工作：
+`jenv-windows` must perform the following tasks in PowerShell 7:
 
-1. 注册本机已有 JDK，不复制 JDK 文件。
-2. 通过 global、local、shell 三层配置选择 JDK。
-3. 在当前 PowerShell 进程中同步 `JAVA_HOME`、`JDK_HOME` 和 `PATH`。
-4. 进入带有 `.java-version` 的项目后自动切换。
-5. 为脚本提供不依赖交互式提示符的确定性执行入口。
-6. 提供可诊断、可测试、可安全恢复的行为。
+1. Register locally installed JDKs without copying their files.
+2. Select a JDK through global, local, and shell configuration layers.
+3. Synchronize `JAVA_HOME`, `JDK_HOME`, and `PATH` in the current PowerShell process.
+4. Switch automatically after entering a project containing `.java-version`.
+5. Provide scripts with a deterministic execution entry point that does not depend on an interactive prompt.
+6. Provide behavior that is diagnosable, testable, and safely reversible.
 
-## 2. 非目标
+## 2. Non-goals
 
-- 不成为 JDK 包管理器。
-- 不永久修改 Windows 用户或系统环境变量。
-- 不替换 PowerShell 的命令解析器。
-- 不追求与上游 jenv 的内部目录和插件实现完全一致。
-- 不在 0.1 版本实现 `java.exe`、`javac.exe` shim。
-- 不为其他 shell 提供兼容层。
+- Acting as a JDK package manager.
+- Permanently modifying Windows user or system environment variables.
+- Replacing PowerShell's command resolver.
+- Exactly reproducing the upstream jenv directory layout or plugin implementation.
+- Implementing `java.exe` or `javac.exe` shims in version 0.1.
+- Providing compatibility layers for other shells.
 
-## 3. 核心约束
+## 3. Core Constraints
 
-### 3.1 必须运行在当前 PowerShell 进程
+### 3.1 Run in the Current PowerShell Process
 
-独立子进程不能修改父 PowerShell 的环境，因此用户入口必须是 PowerShell 函数。`jenv` 函数由 `JEnv` 模块导出，并在函数内部直接修改 `$env:*`。
+A separate child process cannot modify its parent PowerShell environment, so the user entry point must be a PowerShell function. The `JEnv` module exports `jenv`, which modifies `$env:*` directly.
 
-### 3.2 只修改 Process 环境
+### 3.2 Modify Only the Process Environment
 
-所有 Java 环境修改仅作用于当前 `pwsh` 进程及其之后启动的子进程。不得调用以下 API 写入 `User` 或 `Machine` 目标：
+All Java environment changes apply only to the current `pwsh` process and child processes launched afterward. The implementation must not call these APIs with a `User` or `Machine` target:
 
 ```powershell
 [Environment]::SetEnvironmentVariable($Name, $Value, 'User')
 [Environment]::SetEnvironmentVariable($Name, $Value, 'Machine')
 ```
 
-### 3.3 持久化配置与会话状态分离
+### 3.3 Separate Persistent Configuration from Session State
 
-- 注册表、global 版本和 `.java-version` 是持久化状态。
-- shell 版本通过 `$env:JENV_VERSION` 保存，只存在于当前进程及其子进程。
-- 原始环境、managed bin、prompt hook 等属于模块会话状态，不写入配置文件。
+- The registry, global version, and `.java-version` are persistent state.
+- The shell version is stored in `$env:JENV_VERSION` and exists only in the current process and its children.
+- The original environment, managed bin, and prompt hook are module session state and are not written to configuration files.
 
-### 3.4 不执行配置文件内容
+### 3.4 Never Execute Configuration Contents
 
-`versions.json`、`version`、`.java-version` 和 JDK `release` 文件都只能解析，不能通过 `Invoke-Expression`、点调用或动态 PowerShell 代码执行。
+`versions.json`, `version`, `.java-version`, and the JDK `release` file are data. They must never be executed through `Invoke-Expression`, dot-sourcing, or dynamically generated PowerShell.
 
-## 4. 逻辑架构
+## 4. Logical Architecture
 
 ```text
 ┌─────────────────────────────────────────────────────────────┐
@@ -67,193 +67,193 @@
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### 4.1 用户接口层
+### 4.1 User Interface Layer
 
-提供两类入口：
+The module provides two kinds of entry points:
 
-- `jenv <subcommand>`：与上游 jenv 相近的交互式入口。
-- PowerShell 高级函数：供测试、脚本和未来扩展使用。
+- `jenv <subcommand>`: an interactive interface similar to upstream jenv.
+- Advanced PowerShell functions for tests, scripts, and future extension.
 
-`jenv` 只负责参数分派和展示，不应包含版本解析或文件写入逻辑。
+`jenv` handles only argument dispatch and presentation. It must not contain version-resolution or file-writing logic.
 
-### 4.2 命令服务层
+### 4.2 Command Service Layer
 
-每个子命令对应一个明确用例。服务层负责：
+Each subcommand represents one explicit use case. The service layer:
 
-- 验证参数。
-- 调用注册表或解析器。
-- 执行持久化变更。
-- 在需要时调用会话同步。
-- 返回结构化结果或抛出带稳定错误 ID 的错误。
+- validates arguments;
+- calls the registry or resolver;
+- performs persistent changes;
+- invokes session synchronization when required; and
+- returns structured results or throws errors with stable error IDs.
 
-### 4.3 JDK 注册表
+### 4.3 JDK Registry
 
-注册表维护 JDK 元数据和别名映射。它不以符号链接表达版本，原因是 Windows 上符号链接可能受权限或开发者模式影响。
+The registry stores JDK metadata and alias mappings. It does not represent versions with symbolic links because Windows symbolic links may depend on privileges or Developer Mode.
 
-注册流程：
+Registration flow:
 
 ```text
-输入路径
-  → 规范化绝对路径
-  → 验证 java.exe / javac.exe
-  → 读取 release 文件
-  → 必要时执行 java -XshowSettings:properties -version
-  → 生成 canonical ID 与候选别名
-  → 检查冲突
-  → 原子写入 versions.json
+Input path
+  → normalize to an absolute path
+  → validate java.exe / javac.exe
+  → read the release file
+  → run java -XshowSettings:properties -version if needed
+  → generate a canonical ID and candidate aliases
+  → check conflicts
+  → atomically write versions.json
 ```
 
-### 4.4 版本解析器
+### 4.4 Version Resolver
 
-解析器是无副作用组件。输入为当前目录、`JENV_VERSION`、JENV 根目录和注册表快照；输出为：
+The resolver has no side effects. Its inputs are the current directory, `JENV_VERSION`, the JENV root, and a registry snapshot. It returns:
 
 ```text
-RequestedVersion  用户或配置文件中的原始字符串
-CanonicalId       解析后的唯一 ID；system 时为空
-Home              JDK 绝对路径；system 时为空
+RequestedVersion  Original value supplied by the user or configuration file
+CanonicalId       Resolved unique ID; empty for system
+Home              Absolute JDK path; empty for system
 OriginKind        Shell | Local | Global | System
-OriginPath        .java-version 或 global 文件路径；其他情况为空
+OriginPath        Path to .java-version or the global file; otherwise empty
 ```
 
-完整规则见[配置、存储与版本解析](./storage-and-resolution.md)。
+See [Configuration, Storage, and Version Resolution](./storage-and-resolution.md) for the complete rules.
 
-### 4.5 会话集成
+### 4.5 Session Integration
 
-会话集成负责在不覆盖其他工具运行期修改的前提下：
+Without overwriting changes made by other tools at runtime, session integration:
 
-- 移除上一个 managed bin。
-- 将目标 JDK `bin` 添加到 `PATH` 首位。
-- 设置 `JAVA_HOME` 和 `JDK_HOME`。
-- 在 system 状态下恢复初始化前的值。
-- 安装、调用和移除 prompt hook。
+- removes the previous managed bin;
+- puts the selected JDK's `bin` first in `PATH`;
+- sets `JAVA_HOME` and `JDK_HOME`;
+- restores pre-initialization values in the system state; and
+- installs, invokes, and removes the prompt hook.
 
-完整规则见[PowerShell 会话集成](./powershell-integration.md)。
+See [PowerShell Session Integration](./powershell-integration.md) for the complete rules.
 
-## 5. 关键流程
+## 5. Key Flows
 
-### 5.1 模块初始化
+### 5.1 Module Initialization
 
 ```text
 Import-Module JEnv
-  → 校验 PowerShell 版本与 Windows 平台
-  → 计算 JENV_ROOT
-  → 加载函数，但不修改 Profile
+  → validate the PowerShell version and Windows platform
+  → calculate JENV_ROOT
+  → load functions without modifying the profile
 
 jenv init
-  → 捕获当前 JAVA_HOME/JDK_HOME
-  → 解析当前版本
-  → 同步当前进程环境
-  → 安装幂等 prompt hook
+  → capture current JAVA_HOME/JDK_HOME
+  → resolve the current version
+  → synchronize the current process environment
+  → install an idempotent prompt hook
 ```
 
-模块导入和初始化分离，使 CI、单元测试和非交互脚本可以导入函数而不自动修改环境。
+Keeping import separate from initialization lets CI, unit tests, and non-interactive scripts import functions without automatically changing their environment.
 
-### 5.2 注册 JDK
+### 5.2 Registering a JDK
 
-`jenv add <home>` 完成注册后不自动改变 global/local/shell 选择。如果当前解析结果已经引用此次新增的别名，可以执行一次同步；否则保持当前环境不变。
+After `jenv add <home>` registers a JDK, it does not automatically change the global, local, or shell selection. If the current resolution already refers to an alias added by this operation, the session may be synchronized once; otherwise, its environment remains unchanged.
 
-JDK 元数据探测顺序：
+JDK metadata is probed in this order:
 
-1. 解析 `<home>\release`。
-2. 缺失必要字段时执行 `<home>\bin\java.exe -XshowSettings:properties -version`。
-3. 仍无法获得版本时注册失败。
+1. Parse `<home>\release`.
+2. If required fields are missing, run `<home>\bin\java.exe -XshowSettings:properties -version`.
+3. If the version is still unavailable, fail registration.
 
-执行外部程序时使用 `System.Diagnostics.ProcessStartInfo.ArgumentList`，不拼接可执行命令字符串。
+External programs are launched with `System.Diagnostics.ProcessStartInfo.ArgumentList`; executable command strings are never concatenated.
 
-### 5.3 设置版本
+### 5.3 Setting a Version
 
-- `global` 写入用户配置，然后同步当前会话。
-- `local` 写入当前目录 `.java-version`，然后同步当前会话。
-- `shell` 设置 `$env:JENV_VERSION`，然后同步当前会话。
-- `--unset` 删除对应层级后重新执行完整解析，不能简单回退到 system。
+- `global` writes user configuration and synchronizes the session.
+- `local` writes `.java-version` in the current directory and synchronizes the session.
+- `shell` sets `$env:JENV_VERSION` and synchronizes the session.
+- `--unset` removes the relevant layer and performs full resolution again; it must not simply fall back to system.
 
-### 5.4 自动目录切换
+### 5.4 Automatic Directory Switching
 
-交互式会话通过 prompt hook 在每次显示提示符前解析当前目录。只有解析指纹变化时才更新环境。
+In interactive sessions, a prompt hook resolves the current directory before each prompt. The environment is updated only when the resolution fingerprint changes.
 
-解析指纹至少包括：
+The fingerprint includes at least:
 
-- `$env:JENV_VERSION`。
-- 当前文件系统目录。
-- 生效版本文件的完整路径、长度和最后写入时间。
-- `versions.json` 的最后写入时间。
+- `$env:JENV_VERSION`;
+- the current filesystem directory;
+- the effective version file's full path, length, and last-write time; and
+- the last-write time of `versions.json`.
 
-正确性不依赖缓存；缓存失效或计算失败时必须重新解析。
+Correctness must not depend on the cache. If cache validation or fingerprint calculation fails, resolution must run again.
 
-### 5.5 确定性命令执行
+### 5.5 Deterministic Command Execution
 
-交互式 prompt hook 不会在同一条 PowerShell 语句的 `Set-Location` 与后续命令之间运行，例如：
+The interactive prompt hook does not run between `Set-Location` and another command in the same PowerShell statement:
 
 ```powershell
 Set-Location D:\Work\app; java -version
 ```
 
-脚本和连续命令应使用：
+Scripts and compound commands should use:
 
 ```powershell
 jenv exec -- java -version
 ```
 
-`exec` 在子作用域中解析当前目录、设置环境并调用目标命令，结束后恢复调用者会话环境。它不依赖 prompt hook。
+`exec` resolves the current directory in a child scope, applies the environment, invokes the target, and restores the caller's environment afterward. It does not depend on the prompt hook.
 
-## 6. 模块状态模型
+## 6. Module State Model
 
-模块内部维护一个会话状态对象：
+The module maintains a session state object:
 
 ```text
-Initialized             是否完成初始化
-OriginalJavaHome        初始化前是否存在及其值
-OriginalJdkHome         初始化前是否存在及其值
-ManagedJavaHome         最近一次由 jenv 写入的 JAVA_HOME
-ManagedJdkHome          最近一次由 jenv 写入的 JDK_HOME
-ManagedBin              最近一次由 jenv 注入的 PATH 项
-PreviousPrompt          初始化时捕获的 prompt ScriptBlock
-PromptHook              jenv 安装的 prompt ScriptBlock
+Initialized             Whether initialization has completed
+OriginalJavaHome        Whether JAVA_HOME existed before initialization and its value
+OriginalJdkHome         Whether JDK_HOME existed before initialization and its value
+ManagedJavaHome         Most recent JAVA_HOME value written by jenv
+ManagedJdkHome          Most recent JDK_HOME value written by jenv
+ManagedBin              Most recent PATH entry inserted by jenv
+PreviousPrompt          prompt ScriptBlock captured during initialization
+PromptHook              prompt ScriptBlock installed by jenv
 LastResolutionFingerprint
 ```
 
-状态只存在于当前模块实例。`Remove-Module JEnv` 时模块应尝试注销自身 prompt hook，但只能在当前 prompt 仍然是 jenv hook 时恢复旧 prompt，不能覆盖模块初始化之后由其他工具安装的新 prompt。
+This state exists only in the current module instance. When `Remove-Module JEnv` runs, the module should remove its prompt hook. It may restore the old prompt only if the current prompt is still jenv's hook; it must not overwrite a new prompt installed by another tool after initialization.
 
-## 7. 错误模型
+## 7. Error Model
 
-内部函数使用终止错误表达失败，不调用 `exit`。错误必须包含稳定的 `FullyQualifiedErrorId`，例如：
+Internal functions report failures with terminating errors and never call `exit`. Errors have stable `FullyQualifiedErrorId` values:
 
-| 错误 ID | 含义 |
+| Error ID | Meaning |
 | --- | --- |
-| `JEnv.Platform.Unsupported` | 非 Windows 或非 PowerShell Core。 |
-| `JEnv.PowerShellVersion.Unsupported` | PowerShell 低于最低版本。 |
-| `JEnv.Jdk.InvalidHome` | 路径不是有效 JDK home。 |
-| `JEnv.Jdk.ProbeFailed` | 无法取得版本元数据。 |
-| `JEnv.Version.NotInstalled` | 版本或别名不存在。 |
-| `JEnv.Version.InUse` | 版本仍被 shell、local 或 global 配置引用。 |
-| `JEnv.VersionFile.Invalid` | 版本文件格式非法。 |
-| `JEnv.Alias.Conflict` | 显式别名已由其他 JDK 使用。 |
-| `JEnv.Registry.Invalid` | `versions.json` 无法解析或不符合模式。 |
-| `JEnv.Registry.LockTimeout` | 规定时间内无法获得写锁。 |
-| `JEnv.Profile.UpdateFailed` | 无法安全更新 PowerShell Profile。 |
-| `JEnv.Command.NotFound` | `exec` 或 `which` 找不到目标命令。 |
+| `JEnv.Platform.Unsupported` | The host is not Windows or PowerShell Core. |
+| `JEnv.PowerShellVersion.Unsupported` | PowerShell is older than the minimum supported version. |
+| `JEnv.Jdk.InvalidHome` | The path is not a valid JDK home. |
+| `JEnv.Jdk.ProbeFailed` | Version metadata could not be obtained. |
+| `JEnv.Version.NotInstalled` | The version or alias does not exist. |
+| `JEnv.Version.InUse` | A shell, local, or global configuration still refers to the version. |
+| `JEnv.VersionFile.Invalid` | A version file has an invalid format. |
+| `JEnv.Alias.Conflict` | An explicit alias belongs to another JDK. |
+| `JEnv.Registry.Invalid` | `versions.json` cannot be parsed or violates its schema. |
+| `JEnv.Registry.LockTimeout` | The write lock could not be acquired in time. |
+| `JEnv.Profile.UpdateFailed` | The PowerShell profile could not be updated safely. |
+| `JEnv.Command.NotFound` | `exec` or `which` cannot find the target command. |
 
-面向用户的错误信息需要同时说明失败对象、来源以及可执行的修复动作。
+User-facing errors must identify the failed object, its source, and an actionable remedy.
 
-## 8. 安全与可靠性决策
+## 8. Security and Reliability Decisions
 
-- 所有配置文件均按数据解析，不执行其中内容。
-- JDK 路径必须是绝对文件系统路径，且不得包含 `;`、CR 或 LF。
-- 所有配置写入使用同根目录临时文件加原子替换。
-- 修改 `versions.json` 前获取基于规范化 `JENV_ROOT` 的命名互斥锁。
-- 外部进程执行不经过 `Invoke-Expression`。
-- Profile 安装使用明确的托管标记块，不替换用户其他内容。
-- `doctor` 可以报告问题，但除显式修复参数外不得修改配置。
-- 日志和错误不得输出凭据或完整环境变量集合。
+- Treat every configuration file as data; never execute its contents.
+- Require absolute filesystem paths for JDKs and reject paths containing `;`, CR, or LF.
+- Write configuration through a temporary file in the same directory followed by atomic replacement.
+- Acquire a named mutex based on normalized `JENV_ROOT` before modifying `versions.json`.
+- Never use `Invoke-Expression` to launch external processes.
+- Install profile integration in an explicit managed block without replacing other user content.
+- `doctor` may report problems but must not modify configuration without an explicit repair option.
+- Logs and errors must not expose credentials or the complete environment.
 
-## 9. 后续演进
+## 9. Future Evolution
 
-以下能力不属于 0.1 契约，可在保持当前存储兼容的前提下增加：
+The following features are outside the 0.1 contract but may be added without breaking current storage compatibility:
 
-- `jenv discover` 扫描常见 JDK 安装位置和注册表。
-- PowerShell 参数补全。
-- PowerShell Gallery、Scoop、WinGet 发布。
-- 自包含 .NET shim，在执行 `java.exe` 时动态解析 `.java-version`。
-- 独立的 CMD 适配器。
+- `jenv discover` for common JDK installation paths and registry entries.
+- PowerShell argument completion.
+- Publishing to PowerShell Gallery, Scoop, and WinGet.
+- A self-contained .NET shim that resolves `.java-version` when `java.exe` runs.
+- A separate CMD adapter.
 
-任何 shim 都应复用同一份 `versions.json` 和版本解析规则，不能形成第二套选择逻辑。
+Any shim must reuse the same `versions.json` and version-resolution rules; it must not introduce a second selection algorithm.

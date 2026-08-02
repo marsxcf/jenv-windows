@@ -1,61 +1,36 @@
-# 开发规范与实施计划
+# Development Guide and Implementation Plan
 
-## 1. 运行时与工具链
+## 1. Runtime and Toolchain
 
-运行时要求：
+Runtime requirements are Windows, PowerShell 7.4 or later, and `PSEdition = Core`. Runtime behavior must not depend on third-party PowerShell modules or the network. Development uses Pester 5, PSScriptAnalyzer, and Git.
 
-- Windows。
-- PowerShell 7.4 或更高版本。
-- `PSEdition = Core`。
-- 运行时不依赖第三方 PowerShell 模块。
-
-开发依赖：
-
-- Pester 5：测试。
-- PSScriptAnalyzer：静态检查。
-- Git：版本控制。
-
-模块必须可以离线运行。JDK 注册、切换和诊断不得依赖网络。
-
-## 2. 推荐仓库布局
+## 2. Recommended Repository Layout
 
 ```text
 jenv-windows\
 ├─ docs\
-│  ├─ README.md
-│  ├─ architecture.md
-│  ├─ command-reference.md
-│  ├─ storage-and-resolution.md
-│  ├─ powershell-integration.md
-│  ├─ development.md
-│  └─ testing.md
-├─ src\
-│  └─ JEnv\
-│     ├─ JEnv.psd1
-│     ├─ JEnv.psm1
-│     ├─ Public\
-│     │  ├─ Initialize-Jenv.ps1
-│     │  ├─ Invoke-JenvFacade.ps1
-│     │  ├─ Invoke-JenvCommand.ps1
-│     │  ├─ Register-JenvJdk.ps1
-│     │  ├─ Sync-JenvEnvironment.ps1
-│     │  ├─ Test-JenvInstallation.ps1
-│     │  └─ VersionCommands.ps1
-│     └─ Private\
-│        ├─ Environment.ps1
-│        ├─ Errors.ps1
-│        ├─ JdkProbe.ps1
-│        ├─ Json.ps1
-│        ├─ Paths.ps1
-│        ├─ Profile.ps1
-│        ├─ Registry.ps1
-│        ├─ Session.ps1
-│        └─ VersionResolver.ps1
-├─ tests\
-│  ├─ Fixtures\
-│  ├─ Unit\
-│  ├─ Integration\
-│  └─ Acceptance\
+├─ src\JEnv\
+│  ├─ JEnv.psd1
+│  ├─ JEnv.psm1
+│  ├─ Public\
+│  │  ├─ Initialize-Jenv.ps1
+│  │  ├─ Invoke-JenvFacade.ps1
+│  │  ├─ Invoke-JenvCommand.ps1
+│  │  ├─ Register-JenvJdk.ps1
+│  │  ├─ Sync-JenvEnvironment.ps1
+│  │  ├─ Test-JenvInstallation.ps1
+│  │  └─ VersionCommands.ps1
+│  └─ Private\
+│     ├─ Environment.ps1
+│     ├─ Errors.ps1
+│     ├─ JdkProbe.ps1
+│     ├─ Json.ps1
+│     ├─ Paths.ps1
+│     ├─ Profile.ps1
+│     ├─ Registry.ps1
+│     ├─ Session.ps1
+│     └─ VersionResolver.ps1
+├─ tests\{Fixtures,Unit,Integration,Acceptance}\
 ├─ build.ps1
 ├─ install.ps1
 ├─ CHANGELOG.md
@@ -63,13 +38,13 @@ jenv-windows\
 └─ README.md
 ```
 
-`JEnv.psm1` 按确定顺序点加载 Private，再加载 Public，最后显式调用 `Export-ModuleMember`。不能依赖 `Get-ChildItem` 的隐式文件排序。
+`JEnv.psm1` dot-sources Private files in a deterministic order, then Public files, and finally calls `Export-ModuleMember` explicitly. Never depend on implicit `Get-ChildItem` ordering.
 
-## 3. 模块边界
+## 3. Module Boundaries
 
 ### 3.1 Public
 
-Public 函数是受兼容性约束的 PowerShell API：
+Compatibility-governed PowerShell API:
 
 ```text
 jenv
@@ -86,69 +61,33 @@ Invoke-JenvCommand
 Test-JenvInstallation
 ```
 
-具体导出列表以 `JEnv.psd1` 为唯一发布清单。新增导出函数需要文档、测试和 changelog。
+`JEnv.psd1` is the sole authoritative export list. Every new export requires documentation, tests, and a changelog entry.
 
 ### 3.2 Private
 
-Private 函数不能被用户依赖，可以在 minor 版本重构。主要职责：
+Private functions may change in minor releases. They handle normalization, validated/locked/atomic registry I/O, JDK probing, version resolution, environment snapshots, prompt/profile management, and `ErrorRecord` construction.
 
-- 路径和字符串规范化。
-- 注册表读取、验证、锁和原子写入。
-- JDK 元数据探测。
-- local/global/shell 解析。
-- 环境快照、应用和恢复。
-- prompt 与 Profile 管理。
-- ErrorRecord 创建。
+### 3.3 Data Objects
 
-### 3.3 数据对象
-
-优先使用带 `PSTypeNames` 的 `PSCustomObject`，例如：
+Prefer `PSCustomObject` with `PSTypeNames`:
 
 ```powershell
 $result.PSObject.TypeNames.Insert(0, 'JEnv.ResolvedVersion')
 ```
 
-0.1 不建议使用 PowerShell class 作为跨文件公共模型，因为 class 重载和模块 `-Force` 重载会增加开发会话复杂度。
+Avoid PowerShell classes as cross-file public models in 0.1 because class reloading complicates `Import-Module -Force`. Key types are `JEnv.Jdk`, `JEnv.ResolvedVersion`, `JEnv.RegistrationResult`, `JEnv.DiagnosticResult`, and `JEnv.EnvironmentSnapshot`.
 
-关键对象：
+Object properties use PascalCase. Persistent and `--json` fields use camelCase and explicit mappings; never serialize all internal properties directly.
 
-```text
-JEnv.Jdk
-JEnv.ResolvedVersion
-JEnv.RegistrationResult
-JEnv.DiagnosticResult
-JEnv.EnvironmentSnapshot
-```
+## 4. Coding Standards
 
-对象属性使用 PascalCase；JSON 持久化和 `--json` 输出使用 camelCase，并通过显式映射生成，不能直接序列化所有内部属性。
+Each script uses `Set-StrictMode -Version Latest`. Functions use `[CmdletBinding()]`, explicit parameter types, and `SupportsShouldProcess` for mutations. Do not change caller preference variables, use aliases, call `Invoke-Expression`, construct external commands by string concatenation, call `exit`, or depend on current culture for identifiers and comparisons.
 
-## 4. 编码规范
+Use local `-ErrorAction Stop`, `-LiteralPath` or exact .NET path APIs, and no wildcards for deletion. Dispose resources in `finally`, and place finite timeouts on mutexes, processes, and file handles.
 
-每个脚本文件：
+## 5. Error Implementation
 
-```powershell
-Set-StrictMode -Version Latest
-```
-
-约束：
-
-- 使用 `[CmdletBinding()]` 和显式参数类型。
-- 修改操作实现 `SupportsShouldProcess`。
-- 不在模块作用域修改调用者的 `$ErrorActionPreference`、`$ProgressPreference` 或其他 preference 变量。
-- 调用可能产生非终止错误的 cmdlet 时局部使用 `-ErrorAction Stop`。
-- 不使用别名，如 `%`、`?`、`ls`、`cat`。
-- 不使用 `Invoke-Expression` 处理参数、路径或配置。
-- 不使用字符串拼接构造外部命令；使用调用运算符与数组，或 `ProcessStartInfo.ArgumentList`。
-- 不使用 `exit`；失败抛出 ErrorRecord。
-- 不依赖当前 Culture 进行 ID、版本和路径比较。
-- 所有文件系统修改使用 `-LiteralPath` 或对应的 .NET 精确路径 API。
-- 删除操作不使用通配符。
-- 所有 disposable 对象在 `finally` 中释放。
-- 对 mutex、进程和文件句柄设置有限等待时间。
-
-## 5. 错误实现
-
-集中通过私有工厂创建错误：
+Use a centralized factory:
 
 ```powershell
 New-JenvErrorRecord `
@@ -158,56 +97,37 @@ New-JenvErrorRecord `
     -TargetObject $Version
 ```
 
-错误 ID 是自动化契约，消息不是。测试应断言 `FullyQualifiedErrorId` 和关键 TargetObject，而不是完整英文句子。
+Error IDs are automation contracts; message wording is not. Tests assert `FullyQualifiedErrorId` and important target data, not the complete sentence. User messages are English. Localization must never change IDs, object properties, or JSON fields.
 
-0.1 用户消息使用英文，技术文档可以提供中文说明。未来本地化不得改变错误 ID、对象属性或 JSON 字段。
+An error should state what failed, which path/version/file caused it, where the configuration came from, and an actionable next command.
 
-错误信息应回答：
-
-1. 什么操作失败。
-2. 哪个路径、版本或文件导致失败。
-3. 配置来自哪里。
-4. 用户下一步可以执行什么命令。
-
-## 6. 注册表实现分层
-
-建议拆为：
+## 6. Registry Implementation Layers
 
 ```text
-Read-JenvRegistry(path)              读取、解析、模式验证
-Test-JenvRegistry(registry)          逻辑引用验证
-Invoke-WithJenvRegistryLock(root)    并发互斥
-Write-JenvRegistryAtomic(registry)   编码、备份、原子替换
-Update-JenvRegistry(mutation)        锁内重读、修改、revision + 1
+Read-JenvRegistry(path)              parse and validate schema
+Test-JenvRegistry(registry)          validate logical references
+Invoke-WithJenvRegistryLock(root)    serialize concurrent writers
+Write-JenvRegistryAtomic(registry)   encode, back up, atomically replace
+Update-JenvRegistry(mutation)        reread under lock, mutate, increment revision
 ```
 
-业务代码不能直接调用 `ConvertFrom-Json` 后覆盖文件。所有写入统一经过 `Update-JenvRegistry`。
+Business code must not overwrite a file directly after `ConvertFrom-Json`. All writes go through `Update-JenvRegistry`. Specify JSON depth explicitly and construct objects in stable order to reduce meaningless diffs.
 
-JSON 深度参数必须显式指定，避免 PowerShell 默认深度截断。序列化之前按稳定顺序构造对象，减少无意义 diff。
+## 7. JDK Probe Implementation
 
-## 7. JDK 探测实现
-
-探测分为纯解析和 I/O：
+Separate pure parsing from I/O:
 
 ```text
-Read-JenvReleaseFile       解析 release 文本
-Invoke-JenvJavaProbe       执行 java 并捕获属性
-ConvertTo-JenvJdkMetadata  合并、规范化和验证字段
-Get-JenvCanonicalId        生成稳定 ID
-Get-JenvCandidateAliases   生成候选别名
+Read-JenvReleaseFile
+Invoke-JenvJavaProbe
+ConvertTo-JenvJdkMetadata
+Get-JenvCanonicalId
+Get-JenvCandidateAliases
 ```
 
-这样单元测试可以直接提供文本，不依赖本机真实 JDK。
+This lets unit tests supply text without a real JDK. If the release file and Java process disagree, prefer the runtime process for `version`; prefer recognized release values for `vendor` and `architecture`; log differences to Verbose.
 
-如果 release 和 Java 进程对同一必要字段给出不同值：
-
-- `version` 以运行时 Java 进程为准。
-- `vendor` 和 `architecture` 优先使用 release，除非其值无法识别。
-- 通过 Verbose stream 记录差异。
-
-## 8. 版本解析实现
-
-解析器保持只读和确定性：
+## 8. Version Resolver Implementation
 
 ```powershell
 Resolve-JenvVersion `
@@ -217,18 +137,11 @@ Resolve-JenvVersion `
     -ShellVersion $env:JENV_VERSION
 ```
 
-不得在解析器内部：
+The resolver is deterministic and read-only. It never creates files, changes the environment, repairs aliases, or chooses a “closest” version. Every result includes its origin, and callers reuse one result so display, `JAVA_HOME`, and `exec` cannot disagree.
 
-- 创建目录或文件。
-- 修改环境变量。
-- 自动修复别名。
-- 静默选择“最接近”的版本。
+## 9. Session Implementation
 
-解析结果必须带 origin，所有调用者复用同一结果，避免 `JAVA_HOME`、展示和 `exec` 分别解析出不同版本。
-
-## 9. 会话实现
-
-会话状态保存在模块 script scope 的单一对象中。所有修改必须通过以下边界：
+Keep one session-state object in module script scope. All changes pass through:
 
 ```text
 Get-JenvSessionState
@@ -239,11 +152,9 @@ Enable-JenvPromptHook
 Disable-JenvPromptHook
 ```
 
-不能让各命令直接拼接 `$env:Path`。环境算法以[PowerShell 会话集成](./powershell-integration.md)为准。
+Commands must not concatenate `$env:Path` themselves. Follow [PowerShell Session Integration](./powershell-integration.md).
 
-## 10. Facade 参数分派
-
-`jenv` 接收第一个位置参数作为子命令，其余参数保持数组：
+## 10. Facade Argument Dispatch
 
 ```powershell
 function jenv {
@@ -260,99 +171,42 @@ function jenv {
 }
 ```
 
-每个子命令使用独立解析器将 GNU 风格的 `--alias`、`--unset` 等转换成高级函数参数。解析器必须：
+Each subcommand has its own parser mapping GNU-style options to advanced-function parameters. Parsers support `--`, reject unknown/missing options, never split strings already parsed by PowerShell, and preserve the order, types, and boundaries of `exec` arguments.
 
-- 支持 `--` 终止选项解析。
-- 拒绝未知选项和缺失值。
-- 不重新拆分已经由 PowerShell 解析好的字符串。
-- 保持 `exec` 参数的顺序、类型和边界。
+## 11. Help and Comments
 
-## 11. 帮助和注释
+Every Public function has comment-based help. Generate `jenv help <command>` from the same command metadata to avoid duplicate syntax definitions. Keep the root README focused on installation and quick use, link details to `docs`, and make examples directly runnable in PowerShell 7.
 
-- 每个 Public 函数提供 comment-based help。
-- `jenv help <command>` 的内容从同一份命令元数据生成，避免维护两套语法。
-- 仓库根 README 只放安装和快速使用；行为细节链接到 `docs`。
-- 示例必须能在 PowerShell 7 中直接复制执行。
+## 12. Build and Installation
 
-## 12. 构建与安装
+`build.ps1` cleans only a dedicated output directory, runs PSScriptAnalyzer and Pester, copies the module to `artifacts\JEnv\<version>`, runs `Test-ModuleManifest`, and creates a release archive plus checksum.
 
-`build.ps1` 负责：
+`install.ps1` installs to the current user's PowerShell 7 module path, supports `-WhatIf`, requires `-Force` to replace the same version, does not edit the profile automatically, and never changes User/Machine `PATH`. After Gallery publication, recommend `Install-PSResource`; retain the local installer for repository development.
 
-1. 清理专用构建输出目录，不触碰源代码和用户目录。
-2. 运行 PSScriptAnalyzer。
-3. 运行 Pester。
-4. 将模块复制到 `artifacts\JEnv\<version>`。
-5. 执行 `Test-ModuleManifest`。
-6. 生成发布压缩包和校验值。
+## 13. Versioning and Compatibility
 
-`install.ps1` 是开发/本地安装器：
+Use Semantic Versioning: patch releases fix bugs without changing command/schema contracts; minor releases add backward-compatible commands, options, or schema-1 optional fields; major releases may break commands, Public API, or persistence formats.
 
-- 默认安装到当前 PowerShell 7 的 CurrentUser 模块路径。
-- 支持 `-WhatIf`。
-- 已有同版本时要求 `-Force`。
-- 不自动编辑 Profile；用户显式执行 `jenv init --install`。
-- 不修改 User/Machine PATH。
+`schemaVersion` is independent from the module version. Back up before an explicit schema migration and leave the original untouched if migration fails.
 
-发布到 PowerShell Gallery 后推荐使用 `Install-PSResource`，本地安装器仍用于仓库开发。
+## 14. Implementation Phases
 
-## 13. 版本与兼容性
+### Phase A: Core Data and Resolution
 
-采用 Semantic Versioning：
+Build the module skeleton, error factory, root/path handling, registry schema and atomic concurrency, metadata probing, registration commands, and all resolution layers. Completion: stable registration/resolution without session mutation.
 
-- patch：bug 修复，不改变命令和 schema 契约。
-- minor：向后兼容的新命令、选项或 schema 1 可选字段。
-- major：破坏命令、Public API 或持久化格式的变化。
+### Phase B: PowerShell Session
 
-`schemaVersion` 与模块版本独立。模块升级需要显式迁移 schema 时，先创建备份；迁移失败不得改写原文件。
+Implement snapshots, ownership restoration, `PATH` switching, selection/query commands, and isolated `exec`. Completion: all environment scenarios pass with no `PATH` leakage.
 
-## 14. 实施阶段
+### Phase C: Interactive Experience
 
-### 阶段 A：核心数据与解析
+Implement initialization, the prompt hook, profile install/uninstall, diagnostics, help, facade output, and JSON output. Completion: a new PowerShell 7 session automatically applies global/local configuration.
 
-- 模块骨架、清单和错误工厂。
-- JENV_ROOT、路径规范化。
-- registry schema、读取、验证、锁和原子写入。
-- release/Java 元数据探测。
-- add、remove、versions。
-- shell/local/global/system 解析。
+### Phase D: Release Quality
 
-完成标准：不修改会话环境也能稳定注册和解析版本。
-
-### 阶段 B：PowerShell 会话
-
-- 环境快照和所有权恢复。
-- PATH 切换算法。
-- shell/local/global/current/home/which/refresh。
-- `exec` 环境隔离。
-
-完成标准：所有环境验收场景通过，重复切换无 PATH 泄漏。
-
-### 阶段 C：交互体验
-
-- Initialize-Jenv。
-- prompt hook。
-- Profile 安装/卸载。
-- doctor 和帮助。
-- facade 输出、JSON 输出。
-
-完成标准：新 PowerShell 7 会话能自动采用 global/local 配置。
-
-### 阶段 D：发布质量
-
-- PSScriptAnalyzer 清零要求级问题。
-- 完整 Pester 矩阵。
-- 构建、安装、卸载和发布包。
-- README、CHANGELOG、许可证。
+Resolve required analyzer findings; complete the Pester matrix, build/install/uninstall/package flows, README, changelog, and license.
 
 ## 15. Definition of Done
 
-一个功能只有同时满足以下条件才算完成：
-
-- 用户可观察行为符合文档。
-- 有正常、边界和失败测试。
-- 不破坏会话恢复和 PATH 幂等性。
-- 新错误有稳定错误 ID。
-- 新持久化字段有模式与兼容性说明。
-- Public API 有帮助文本。
-- PSScriptAnalyzer、Pester 和模块清单验证通过。
-- 相关技术文档和 changelog 已更新。
+A feature is complete only when observable behavior matches the docs; normal, boundary, and failure tests exist; session restoration and `PATH` idempotency remain intact; new errors have stable IDs; persistence fields document schema compatibility; Public APIs have help; analysis, tests, and manifest validation pass; and technical docs plus changelog are updated.
