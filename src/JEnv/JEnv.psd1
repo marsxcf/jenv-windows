@@ -41,8 +41,8 @@ global/system scopes. A Windows-native reimagining of jenv.
     PrivateData = @{
         PSData = @{
             Tags         = @('Java', 'JDK', 'jenv', 'PowerShell', 'Windows', 'JavaVersion')
-            LicenseUri   = 'https://github.com/jenv-windows/jenv-windows/blob/main/LICENSE'
-            ProjectUri   = 'https://github.com/jenv-windows/jenv-windows'
+            LicenseUri   = 'https://github.com/marsxcf/jenv-windows/blob/main/LICENSE'
+            ProjectUri   = 'https://github.com/marsxcf/jenv-windows'
             ReleaseNotes = 'See CHANGELOG.md.'
             Prerelease   = ''
         }
