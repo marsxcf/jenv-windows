@@ -24,3 +24,20 @@ $RECYCLE.BIN/
 
 # Built Visual Studio Code Extensions
 *.vsix
+
+### jenv-windows
+# Build artifacts
+artifacts/
+build-output/
+
+# Test results
+test-results/
+TestResults/
+
+# Local runtime data (never commit a user's JDK registry)
+.jenv/
+.jenv-windows/
+
+# Inno Setup build output
+packaging/Output/
+*.exe.tmp

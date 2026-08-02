@@ -1,0 +1,25 @@
+# Changelog
+
+All notable changes to this project are documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+Error IDs (`FullyQualifiedErrorId`), Public API names, and `versions.json`
+field names are part of the compatibility contract: they only change in a
+major version.
+
+## [Unreleased]
+
+### Added — 0.1.0 (in development)
+
+- JDK registry with canonical IDs and aliases (`add`, `remove`, `versions`).
+- Three-scope version selection: `shell` > `local` (`.java-version`) > `global` > `system`.
+- In-process `JAVA_HOME` / `JDK_HOME` / `PATH` management with an ownership model
+  that survives PATH edits made by other tools after initialization.
+- `jenv exec` for deterministic, prompt-hook-free command execution.
+- `prompt` hook with resolution fingerprinting for automatic directory switching.
+- Profile integration (`jenv init --install` / `--uninstall`).
+- `doctor`, `current`, `home`, `which`, `refresh`, `root`, `help`.
+- `--json` / `--bare` machine-readable output.
+- WinGet distribution via a per-user Inno Setup installer.

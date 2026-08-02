@@ -1,0 +1,103 @@
+name: release
+
+# Builds the module, runs analysis + tests, packages a per-user Inno Setup
+# installer, publishes a GitHub Release with the installer + module zip, and
+# renders the WinGet manifest (with SHA256) for submission to winget-pkgs.
+#
+# The first release to winget-pkgs is a manual PR (new PackageIdentifier);
+# subsequent versions can be auto-PR'd via winget-pkgs-automation.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version (without leading v)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Pester and PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Set-PSRepository PSGallery -InstallationPolicy Trusted
+          Install-Module Pester -Scope CurrentUser -Force -SkipPublisherCheck -AllowClobber
+          Install-Module PSScriptAnalyzer -Scope CurrentUser -Force -SkipPublisherCheck
+
+      - name: Resolve version
+        id: ver
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF -match '^refs/tags/v?(.+)$') {
+            $version = $Matches[1]
+          } else {
+            $version = '${{ github.event.inputs.version }}'
+          }
+          if (-not $version) { throw "Could not determine version." }
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Build (analyze + test + assemble + zip)
+        shell: pwsh
+        run: ./build.ps1 -Version ${{ steps.ver.outputs.version }}
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup -y --no-progress
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $ver = '${{ steps.ver.outputs.version }}'
+          iscc "/DAppVersion=$ver" packaging\installer.iss
+          if (-not (Test-Path "packaging\Output\jenv-windows-$ver-setup.exe")) {
+            throw "Installer was not produced."
+          }
+
+      - name: Hash installer and render WinGet manifest
+        id: pkg
+        shell: pwsh
+        run: |
+          $ver = '${{ steps.ver.outputs.version }}'
+          $exe = "packaging\Output\jenv-windows-$ver-setup.exe"
+          $hash = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash
+          "sha256=$hash" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+          $tmpl = Get-Content -Raw -LiteralPath packaging\winget\jenv.jenv-windows.yaml.template
+          $rendered = $tmpl.Replace('__VERSION__', $ver).Replace('__SHA256__', $hash)
+          New-Item -ItemType Directory -Force -Path packaging\winget\out | Out-Null
+          $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+          [System.IO.File]::WriteAllText(
+            (Join-Path (Get-Location) 'packaging\winget\out\jenv.jenv-windows.yaml'),
+            $rendered, $utf8NoBom)
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: jenv-windows ${{ steps.ver.outputs.version }}
+          generate_release_notes: true
+          files: |
+            packaging/Output/jenv-windows-${{ steps.ver.outputs.version }}-setup.exe
+            artifacts/JEnv.${{ steps.ver.outputs.version }}.zip
+            packaging/winget/out/jenv.jenv-windows.yaml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Optional: open a winget-pkgs PR automatically. Uncomment after the first
+      # (manual) submission establishes the PackageIdentifier.
+      # - name: Submit to winget-pkgs
+      #   uses: vedantmgoyal2009/winget-releaser@v2
+      #   with:
+      #     identifier: jenv-windows.jenv-windows
+      #     version: ${{ steps.ver.outputs.version }}
+      #     installers-regex: 'jenv-windows-.*-setup\.exe$'
+      #     token: ${{ secrets.WINGET_TOKEN }}
