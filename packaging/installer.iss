@@ -55,14 +55,14 @@ Source: "{#SourceDir}\*"; DestDir: "{app}\JEnv"; Flags: recursesubdirs ignorever
 [Run]
 ; Install the module into the CurrentUser module path and hook the profile.
 ; -ExecutionPolicy Bypass so the one-shot installer line can run unsigned.
-Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""$ErrorActionPreference='Stop'; $base=($env:PSModulePath -split ';' | Where-Object { $_ -like \"$HOME*\" } | Select-Object -First 1); if(-not $base){$base=Join-Path $HOME 'Documents\PowerShell\Modules'}; $dest=Join-Path $base ('JEnv\{#AppVersion}'); if(Test-Path $dest){Remove-Item -Recurse -Force $dest}; New-Item -ItemType Directory -Force -Path $dest | Out-Null; Copy-Item -Path '{app}\JEnv\*' -Destination $dest -Recurse -Force; Import-Module JEnv -Force; jenv init --install"""; \
+Filename: "pwsh.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""$ErrorActionPreference='Stop'; $base=($env:PSModulePath -split ';' | Where-Object { $_ -and [IO.Path]::GetFullPath($_).StartsWith([IO.Path]::GetFullPath($HOME), [StringComparison]::OrdinalIgnoreCase) } | Select-Object -First 1); if(-not $base){$base=Join-Path $HOME 'Documents\PowerShell\Modules'}; $dest=Join-Path $base ('JEnv\{#AppVersion}'); if(Test-Path -LiteralPath $dest){Remove-Item -Recurse -Force -LiteralPath $dest}; New-Item -ItemType Directory -Force -Path $dest | Out-Null; Get-ChildItem -LiteralPath '{app}\JEnv' -Force | Copy-Item -Destination $dest -Recurse -Force; Import-Module JEnv -Force; jenv init --install"""; \
   StatusMsg: "Installing JEnv module and hooking your PowerShell profile..."; \
   Flags: runhidden
 
 [UninstallRun]
 ; Remove the profile hook first (restores the original prompt/env), then delete
 ; the module. versions.json under %USERPROFILE%\.jenv is intentionally preserved.
-Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""try { Import-Module JEnv -ErrorAction Stop; jenv init --uninstall } catch { }; $base=($env:PSModulePath -split ';' | Where-Object { $_ -like \"$HOME*\" } | Select-Object -First 1); if($base){ Remove-Item -Recurse -Force (Join-Path $base 'JEnv\{#AppVersion}') -ErrorAction SilentlyContinue }"""; \
+Filename: "pwsh.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""try { Import-Module JEnv -ErrorAction Stop; jenv init --uninstall } catch { }; $base=($env:PSModulePath -split ';' | Where-Object { $_ -and [IO.Path]::GetFullPath($_).StartsWith([IO.Path]::GetFullPath($HOME), [StringComparison]::OrdinalIgnoreCase) } | Select-Object -First 1); if($base){ Remove-Item -Recurse -Force -LiteralPath (Join-Path $base 'JEnv\{#AppVersion}') -ErrorAction SilentlyContinue }"""; \
   Flags: runhidden
 
 [UninstallDelete]

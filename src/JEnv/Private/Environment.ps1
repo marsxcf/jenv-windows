@@ -78,6 +78,7 @@ function Build-JenvManagedPath {
 # Remove all entries equal to $ManagedBin from PATH (for the system state).
 function Remove-JenvManagedPathEntry {
     [CmdletBinding()]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Pure string transformation; it does not modify process state.')]
     [OutputType([string])]
     param(
         [Parameter()][AllowEmptyString()][string]$CurrentPath,

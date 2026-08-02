@@ -6,7 +6,52 @@ Set-StrictMode -Version Latest
 function ConvertFrom-JenvJson {
     [CmdletBinding()]
     param([Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$Json)
-    return ($Json | ConvertFrom-Json -AsHashtable)
+
+    # ConvertFrom-Json in newer PowerShell versions may coerce ISO-looking
+    # strings into DateTime values. Use System.Text.Json so schema-1 values and
+    # unknown forward-compatible properties retain their JSON types exactly.
+    function ConvertFrom-JenvJsonElement {
+        param([Parameter(Mandatory)][System.Text.Json.JsonElement]$Element)
+
+        switch ($Element.ValueKind) {
+            ([System.Text.Json.JsonValueKind]::Object) {
+                $map = [System.Collections.Specialized.OrderedDictionary]::new([System.StringComparer]::Ordinal)
+                foreach ($property in $Element.EnumerateObject()) {
+                    if ($map.Contains($property.Name)) {
+                        throw "Duplicate JSON property '$($property.Name)'."
+                    }
+                    $map.Add($property.Name, (ConvertFrom-JenvJsonElement -Element $property.Value))
+                }
+                return $map
+            }
+            ([System.Text.Json.JsonValueKind]::Array) {
+                $items = [System.Collections.Generic.List[object]]::new()
+                foreach ($item in $Element.EnumerateArray()) {
+                    $items.Add((ConvertFrom-JenvJsonElement -Element $item))
+                }
+                return (, $items.ToArray())
+            }
+            ([System.Text.Json.JsonValueKind]::String) { return $Element.GetString() }
+            ([System.Text.Json.JsonValueKind]::Number) {
+                $integer = [long]0
+                if ($Element.TryGetInt64([ref]$integer)) { return $integer }
+                $decimal = [decimal]0
+                if ($Element.TryGetDecimal([ref]$decimal)) { return $decimal }
+                return $Element.GetDouble()
+            }
+            ([System.Text.Json.JsonValueKind]::True) { return $true }
+            ([System.Text.Json.JsonValueKind]::False) { return $false }
+            ([System.Text.Json.JsonValueKind]::Null) { return $null }
+            default { throw "Unsupported JSON token '$($Element.ValueKind)'." }
+        }
+    }
+
+    $document = [System.Text.Json.JsonDocument]::Parse($Json)
+    try {
+        return (ConvertFrom-JenvJsonElement -Element $document.RootElement)
+    } finally {
+        $document.Dispose()
+    }
 }
 
 function ConvertTo-JenvJson {
@@ -28,7 +73,18 @@ function Write-JenvTextUtf8NoBom {
     )
     $normalized = $Content -replace "`r`n", "`n"
     $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
-    [System.IO.File]::WriteAllText($Path, $normalized, $utf8NoBom)
+    $bytes = $utf8NoBom.GetBytes($normalized)
+    $stream = [System.IO.FileStream]::new(
+        $Path,
+        [System.IO.FileMode]::Create,
+        [System.IO.FileAccess]::Write,
+        [System.IO.FileShare]::None)
+    try {
+        $stream.Write($bytes, 0, $bytes.Length)
+        $stream.Flush($true)
+    } finally {
+        $stream.Dispose()
+    }
 }
 
 # Read a file as text, tolerating BOM or no BOM (UTF-8).

@@ -13,31 +13,55 @@ function Invoke-JenvCommand {
         [Parameter()][string]$Root = (Get-JenvRoot)
     )
 
-    $args = @($ArgumentList | Where-Object { $null -ne $_ } | ForEach-Object { [string]$_ })
-    if ($args.Count -eq 0) {
+    $commandArguments = @($ArgumentList | Where-Object { $null -ne $_ } | ForEach-Object { [string]$_ })
+    if ($commandArguments.Count -eq 0) {
         throw (New-JenvErrorRecord -Id 'JEnv.Command.NotFound' `
             -Message "jenv exec requires a command after '--'." -Category InvalidArgument)
     }
 
-    $command = $args[0]
+    $command = $commandArguments[0]
     $cmdArgs = @()
-    if ($args.Count -gt 1) { $cmdArgs = @($args[1..($args.Count - 1)]) }
+    if ($commandArguments.Count -gt 1) { $cmdArgs = @($commandArguments[1..($commandArguments.Count - 1)]) }
 
     $resolved = Resolve-JenvRequiredVersion -Version $Version -Root $Root
     $snapshot = Get-JenvProcessEnvironmentSnapshot
 
     try {
-        if ($resolved.OriginKind -ne 'System' -and -not [string]::IsNullOrEmpty($resolved.Home)) {
+        if ($resolved.OriginKind -eq 'System') {
+            if ($null -ne $script:JEnvSession) {
+                if (-not [string]::IsNullOrEmpty($script:JEnvSession.ManagedBin)) {
+                    [Environment]::SetEnvironmentVariable(
+                        'PATH',
+                        (Remove-JenvManagedPathEntry -CurrentPath $env:PATH -ManagedBin $script:JEnvSession.ManagedBin),
+                        'Process')
+                }
+                Restore-JenvOwnedEnvironment -Name 'JAVA_HOME' `
+                    -ManagedValue $script:JEnvSession.ManagedJavaHome -Original $script:JEnvSession.OriginalJavaHome
+                Restore-JenvOwnedEnvironment -Name 'JDK_HOME' `
+                    -ManagedValue $script:JEnvSession.ManagedJdkHome -Original $script:JEnvSession.OriginalJdkHome
+            }
+        } elseif (-not [string]::IsNullOrEmpty($resolved.Home)) {
             $bin = Join-Path $resolved.Home 'bin'
             [Environment]::SetEnvironmentVariable('JAVA_HOME', $resolved.Home, 'Process')
             [Environment]::SetEnvironmentVariable('JDK_HOME', $resolved.Home, 'Process')
-            [Environment]::SetEnvironmentVariable('PATH', ($bin + [System.IO.Path]::PathSeparator + $env:PATH), 'Process')
+            $oldManagedBin = if ($null -ne $script:JEnvSession) { $script:JEnvSession.ManagedBin } else { '' }
+            [Environment]::SetEnvironmentVariable(
+                'PATH',
+                (Build-JenvManagedPath -CurrentPath $env:PATH -OldManagedBin $oldManagedBin -TargetBin $bin),
+                'Process')
+        }
+
+        $resolvedCommand = Get-Command -Name $command -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($null -eq $resolvedCommand) {
+            throw (New-JenvErrorRecord -Id 'JEnv.Command.NotFound' `
+                -Message "Command '$command' was not found for jenv exec." `
+                -Category ObjectNotFound -TargetObject $command)
         }
 
         if ($cmdArgs.Count -gt 0) {
-            & $command @cmdArgs
+            & $resolvedCommand @cmdArgs
         } else {
-            & $command
+            & $resolvedCommand
         }
     } finally {
         Restore-JenvProcessEnvironment -Snapshot $snapshot

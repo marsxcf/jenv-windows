@@ -99,9 +99,13 @@ function Add-JenvProfileBootstrap {
     }
 
     $block = Get-JenvProfileBootstrapBlock -Newline $newline
-    $prefix = if ($content.Length -gt 0 -and -not $content.EndsWith($newline)) { $newline } else { '' }
-    if ($content.Length -eq 0) { $prefix = '' }
-    $newContent = $content + $prefix + $newline + $block + $newline
+    if ($content.Length -eq 0) {
+        $newContent = $block + $newline
+    } else {
+        # Keep one visual blank line between user content and the managed block.
+        $separator = if ($content.EndsWith($newline)) { $newline } else { $newline + $newline }
+        $newContent = $content + $separator + $block + $newline
+    }
 
     $dir = Split-Path $path -Parent
     if (-not (Test-Path -LiteralPath $dir -PathType Container)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
@@ -140,6 +144,7 @@ function Remove-JenvProfileBootstrap {
     $bytes = [System.IO.File]::ReadAllBytes($path)
     $hasBom = ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
     $content = [System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8)
+    $newline = if ($content -match "`r`n") { "`r`n" } else { "`n" }
     $state = Test-JenvProfileBlockState -Content $content
     if ($state -eq 'Absent') {
         return [pscustomobject]@{ PSTypeName = 'JEnv.ProfileResult'; Action = 'Unchanged'; Path = $path }
@@ -157,12 +162,21 @@ function Remove-JenvProfileBootstrap {
 
     if (-not $PSCmdlet.ShouldProcess($path, 'Remove jenv-windows bootstrap block')) { return $null }
 
-    $pattern = [regex]::Escape($script:JEnvProfileBegin) + '[\s\S]*?' + [regex]::Escape($script:JEnvProfileEnd)
-    $newContent = [regex]::Replace($content, $pattern, {
-        param($m) [string]::Empty
-    })
-    # Collapse up to one adjacent blank line left behind.
-    $newContent = [regex]::Replace($newContent, "(\r\n|\n){3,}", "`r`n`r`n")
+    $beginIndex = $content.IndexOf($script:JEnvProfileBegin, [System.StringComparison]::Ordinal)
+    $endIndex = $content.IndexOf($script:JEnvProfileEnd, $beginIndex, [System.StringComparison]::Ordinal)
+    $afterIndex = $endIndex + $script:JEnvProfileEnd.Length
+
+    # Remove the block, its trailing newline, and at most the one blank line
+    # inserted immediately before it. Never normalize unrelated whitespace.
+    if ($content.Substring($afterIndex).StartsWith($newline)) {
+        $afterIndex += $newline.Length
+    }
+    $before = $content.Substring(0, $beginIndex)
+    $doubleNewline = $newline + $newline
+    if ($before.EndsWith($doubleNewline)) {
+        $before = $before.Substring(0, $before.Length - $newline.Length)
+    }
+    $newContent = $before + $content.Substring($afterIndex)
 
     $dir = Split-Path $path -Parent
     $temp = Join-Path $dir ([System.IO.Path]::GetRandomFileName())

@@ -32,7 +32,7 @@ function Read-JenvReleaseFile {
 }
 
 # Parse `java -XshowSettings:properties -version` style output ("    key = value").
-function Parse-JenvPropertyOutput {
+function ConvertFrom-JenvPropertyOutput {
     [CmdletBinding()]
     [OutputType([System.Collections.Specialized.OrderedDictionary])]
     param([Parameter(Mandatory)][AllowEmptyString()][string]$Text)
@@ -73,7 +73,11 @@ function Invoke-JenvJavaProbe {
             -RedirectStandardOutput $outFile -RedirectStandardError $errFile
 
         if (-not $p.WaitForExit($TimeoutSeconds * 1000)) {
-            try { $p.Kill($true) } catch { try { $p.Kill() } catch { } }
+            try {
+                $p.Kill($true)
+            } catch {
+                try { $p.Kill() } catch { Write-Verbose "Unable to kill timed-out java.exe process: $_" }
+            }
             throw (New-JenvErrorRecord -Id 'JEnv.Jdk.ProbeFailed' `
                 -Message "java.exe did not exit within $TimeoutSeconds s; process tree killed." `
                 -Category Timeout -TargetObject $JavaExe)
@@ -81,7 +85,7 @@ function Invoke-JenvJavaProbe {
 
         $stdout = if (Test-Path -LiteralPath $outFile) { Read-JenvTextFile -Path $outFile } else { '' }
         $stderr = if (Test-Path -LiteralPath $errFile) { Read-JenvTextFile -Path $errFile } else { '' }
-        return (Parse-JenvPropertyOutput -Text ($stdout + "`n" + $stderr))
+        return (ConvertFrom-JenvPropertyOutput -Text ($stdout + "`n" + $stderr))
     } catch {
         if ($_.FullyQualifiedErrorId -eq 'JEnv.Jdk.ProbeFailed') { throw }
         throw (New-JenvErrorRecord -Id 'JEnv.Jdk.ProbeFailed' `
@@ -131,11 +135,12 @@ function ConvertTo-JenvVendorId {
 # available; vendor/architecture prefer the release file unless unrecognized.
 function ConvertTo-JenvJdkMetadata {
     [CmdletBinding()]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseSingularNouns', '', Justification = 'Metadata is the conventional singular mass noun for this value object.')]
     [OutputType([pscustomobject])]
     param(
         [Parameter()]$Release = $null,
         [Parameter()]$Probe = $null,
-        [Parameter()][string]$Home = ''
+        [Parameter()][Alias('Home')][string]$JdkHome = ''
     )
 
     $rel = if ($Release) { $Release } else { [ordered]@{} }
@@ -145,7 +150,7 @@ function ConvertTo-JenvJdkMetadata {
     if ([string]::IsNullOrEmpty($rawVersion)) { $rawVersion = $rel['JAVA_VERSION'] }
     if ([string]::IsNullOrEmpty($rawVersion)) {
         throw (New-JenvErrorRecord -Id 'JEnv.Jdk.ProbeFailed' `
-            -Message "Could not determine the Java version for '$Home'." -Category InvalidResult -TargetObject $Home)
+            -Message "Could not determine the Java version for '$JdkHome'." -Category InvalidResult -TargetObject $JdkHome)
     }
 
     # Strip build metadata ("+7") for the normalized form, then unify "_" with ".".
@@ -164,6 +169,11 @@ function ConvertTo-JenvJdkMetadata {
         }
         $major = [int]$first
     }
+    if ($major -le 0) {
+        throw (New-JenvErrorRecord -Id 'JEnv.Jdk.ProbeFailed' `
+            -Message "Java major version must be positive (got '$rawVersion')." `
+            -Category InvalidResult -TargetObject $rawVersion)
+    }
 
     $vendor = $rel['IMPLEMENTOR']
     if ([string]::IsNullOrEmpty($vendor)) { $vendor = $prb['java.vendor'] }
@@ -177,7 +187,7 @@ function ConvertTo-JenvJdkMetadata {
     $architecture = ConvertTo-JenvArchitecture -OsArch $osArch
 
     return [pscustomobject]@{
-        Home              = $Home
+        Home              = $JdkHome
         Version           = $rawVersion
         NormalizedVersion = $normalized
         Major             = $major
@@ -207,6 +217,7 @@ function Get-JenvCanonicalId {
 # Order is significant; deduped preserving order.
 function Get-JenvCandidateAliases {
     [CmdletBinding()]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseSingularNouns', '', Justification = 'The function intentionally returns a collection of aliases.')]
     [OutputType([string[]])]
     param(
         [Parameter(Mandatory)]$Metadata,
@@ -233,16 +244,16 @@ function Get-JenvCandidateAliases {
 
 # Top-level probe: validate the JDK home, read release, fall back to java, and
 # return a metadata object plus canonical id and candidate aliases.
-function Probe-JenvJdk {
+function Get-JenvProbedJdk {
     [CmdletBinding()]
     [OutputType([pscustomobject])]
-    param([Parameter(Mandatory)][string]$Home)
+    param([Parameter(Mandatory)][Alias('Home')][string]$JdkHome)
 
-    $homeAbs = Resolve-JenvHomePath -HomePath $Home
+    $homeAbs = Resolve-JenvHomePath -HomePath $JdkHome
     if (-not (Test-JenvHomePathSafe -HomePath $homeAbs)) {
         throw (New-JenvErrorRecord -Id 'JEnv.Jdk.InvalidHome' `
-            -Message "JDK home must not be empty and must not contain ';', CR or LF (got '$Home')." `
-            -Category InvalidArgument -TargetObject $Home)
+            -Message "JDK home must not be empty and must not contain ';', CR or LF (got '$JdkHome')." `
+            -Category InvalidArgument -TargetObject $JdkHome)
     }
 
     $javaExe = Join-Path $homeAbs 'bin\java.exe'
@@ -269,7 +280,7 @@ function Probe-JenvJdk {
     }
     if ($needsProbe) { $probe = Invoke-JenvJavaProbe -JavaExe $javaExe }
 
-    $metadata = ConvertTo-JenvJdkMetadata -Release $release -Probe $probe -Home $homeAbs
+    $metadata = ConvertTo-JenvJdkMetadata -Release $release -Probe $probe -JdkHome $homeAbs
     $canonical = Get-JenvCanonicalId -Metadata $metadata
     $aliases = Get-JenvCandidateAliases -Metadata $metadata -CanonicalId $canonical
 

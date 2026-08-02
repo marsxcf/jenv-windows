@@ -24,6 +24,7 @@ function Get-JenvSessionState {
 # "original" (docs/powershell-integration.md section 3.2).
 function New-JenvSessionState {
     [CmdletBinding()]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Private in-memory state initialization; public environment-changing commands provide the user boundary.')]
     param()
 
     $originalJavaExists = (-not [string]::IsNullOrEmpty($env:JAVA_HOME))
@@ -57,6 +58,7 @@ function New-JenvSessionState {
 # the ownership rules and clear state.
 function Reset-JenvSessionState {
     [CmdletBinding()]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Private cleanup invoked by module removal and the ShouldProcess-aware uninstall command.')]
     param()
     if ($null -eq $script:JEnvSession) { return }
     Sync-JenvSystemState -State $script:JEnvSession

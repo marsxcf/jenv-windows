@@ -23,3 +23,8 @@ major version.
 - `doctor`, `current`, `home`, `which`, `refresh`, `root`, `help`.
 - `--json` / `--bare` machine-readable output.
 - WinGet distribution via a per-user Inno Setup installer.
+
+### Fixed
+
+- Aligned registry validation, session cleanup, version removal, `exec`, prompt,
+  Profile, build, installer, and CI behavior with the documented 0.1 contract.

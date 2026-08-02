@@ -77,7 +77,7 @@ junk line without equals
         }
         It 'parses java property output' {
             $txt = "    java.version = 17.0.12`n    java.vendor = Eclipse Adoptium`n    os.arch = amd64`n"
-            $p = Parse-JenvPropertyOutput -Text $txt
+            $p = ConvertFrom-JenvPropertyOutput -Text $txt
             $p['java.version'] | Should -Be '17.0.12'
             $p['os.arch'] | Should -Be 'amd64'
         }
@@ -238,7 +238,7 @@ Describe 'Registry' {
         }
         It 'round-trips a write and bumps revision' {
             Update-JenvRegistry -Mutation { param($r)
-                $r.jdks['openjdk64-21'] = [ordered]@{ home = 'C:\jdk'; version = '21'; normalizedVersion = '21'; major = 21; vendor = 'x'; vendorId = 'openjdk'; architecture = 'x64'; registeredAt = 't'; updatedAt = 't' }
+                $r.jdks['openjdk64-21'] = [ordered]@{ home = 'C:\jdk'; version = '21'; normalizedVersion = '21'; major = 21; vendor = 'x'; vendorId = 'openjdk'; architecture = 'x64'; registeredAt = '2026-08-02T00:00:00Z'; updatedAt = '2026-08-02T00:00:00Z' }
                 $r.aliases['21'] = 'openjdk64-21'
             }
             Update-JenvRegistry -Mutation { param($r) $r.aliases['latest'] = 'openjdk64-21' }
@@ -262,6 +262,35 @@ Describe 'Registry' {
             Set-Content -LiteralPath (Join-Path $env:JENV_ROOT 'versions.json') -Value $bad -NoNewline
             { Read-JenvRegistry } | Should -Throw -ErrorId 'JEnv.Registry.Invalid'
         }
+        It 'rejects a string schema version and negative revision' {
+            $badSchema = '{"schemaVersion":"1","revision":0,"jdks":{},"aliases":{}}'
+            Set-Content -LiteralPath (Join-Path $env:JENV_ROOT 'versions.json') -Value $badSchema -NoNewline
+            { Read-JenvRegistry } | Should -Throw -ErrorId 'JEnv.Registry.Invalid'
+
+            $badRevision = '{"schemaVersion":1,"revision":-1,"jdks":{},"aliases":{}}'
+            Set-Content -LiteralPath (Join-Path $env:JENV_ROOT 'versions.json') -Value $badRevision -NoNewline
+            { Read-JenvRegistry } | Should -Throw -ErrorId 'JEnv.Registry.Invalid'
+        }
+        It 'preserves unknown schema-1 properties and JSON string types on write' {
+            $json = '{"schemaVersion":1,"revision":0,"future":"2026-08-02T00:00:00Z","jdks":{"a-1":{"home":"C:\\a","version":"1","normalizedVersion":"1","major":1,"vendor":"v","vendorId":"v","architecture":"x64","registeredAt":"2026-08-02T00:00:00Z","updatedAt":"2026-08-02T00:00:00Z","futureFlag":{"enabled":true}}},"aliases":{}}'
+            Set-Content -LiteralPath (Join-Path $env:JENV_ROOT 'versions.json') -Value $json -NoNewline
+            Update-JenvRegistry -Mutation { param($registry) $registry.aliases['one'] = 'a-1' }
+            $parsed = ConvertFrom-JenvJson -Json (Get-Content -LiteralPath (Join-Path $env:JENV_ROOT 'versions.json') -Raw)
+            $parsed.future.GetType() | Should -Be ([string])
+            $parsed.future | Should -Be '2026-08-02T00:00:00Z'
+            $parsed.jdks['a-1'].futureFlag.enabled | Should -BeTrue
+        }
+        It 'rejects canonical ids that differ only by case' {
+            $record = '"home":"C:\\a","version":"1","normalizedVersion":"1","major":1,"vendor":"v","vendorId":"v","architecture":"x64","registeredAt":"2026-08-02T00:00:00Z","updatedAt":"2026-08-02T00:00:00Z"'
+            $json = '{"schemaVersion":1,"revision":0,"jdks":{"A-1":{' + $record + '},"a-1":{' + $record + '}},"aliases":{}}'
+            Set-Content -LiteralPath (Join-Path $env:JENV_ROOT 'versions.json') -Value $json -NoNewline
+            { Read-JenvRegistry } | Should -Throw -ErrorId 'JEnv.Registry.Invalid'
+        }
+        It 'rejects an oversized version file' {
+            $file = Join-Path $env:JENV_ROOT 'version'
+            Set-Content -LiteralPath $file -Value ('1' * 4097) -NoNewline
+            { Read-JenvVersionFile -Path $file } | Should -Throw -ErrorId 'JEnv.VersionFile.Invalid'
+        }
     }
 }
 
@@ -276,6 +305,8 @@ Describe 'JdkCommands add/remove/versions' {
         $script:Jdk17 = Join-Path $script:CRoot 'jdk17'
         New-FakeJdk -Base $script:Jdk8 -Version '1.8.0_442' -Implementor 'Amazon.com Inc.' -OsArch 'x86_64'
         New-FakeJdk -Base $script:Jdk17 -Version '17.0.12+7' -Implementor 'Eclipse Adoptium' -OsArch 'amd64'
+        Set-Location -LiteralPath $script:CRoot
+        Remove-Item Env:\JENV_VERSION -ErrorAction SilentlyContinue
     }
     AfterAll { Remove-Item -Recurse -Force $script:CRoot -ErrorAction SilentlyContinue }
 
@@ -283,16 +314,22 @@ Describe 'JdkCommands add/remove/versions' {
         $r = Register-JenvJdk -Home $script:Jdk8
         $r.Action | Should -Be 'Added'
         $r.CanonicalId | Should -Be 'corretto64-1.8.0.442'
-        ($r.Aliases -join ',') | Should -Be '1.8.0.442,1.8,8'
+        ($r.Aliases -join ',') | Should -Be '1.8,1.8.0.442,8'
     }
-    It 're-registers the same home as Updated' {
+    It 're-registers unchanged metadata without writing the registry' {
+        $before = (Get-Content -LiteralPath (Join-Path $script:CRoot 'versions.json') -Raw | ConvertFrom-Json).revision
         $r = Register-JenvJdk -Home $script:Jdk8
-        $r.Action | Should -Be 'Updated'
+        $r.Action | Should -Be 'Unchanged'
+        $after = (Get-Content -LiteralPath (Join-Path $script:CRoot 'versions.json') -Raw | ConvertFrom-Json).revision
+        $after | Should -Be $before
     }
     It 'refuses a canonical collision with a different home' {
         $evil = Join-Path $script:CRoot 'jdk8copy'
         New-FakeJdk -Base $evil -Version '1.8.0_442' -Implementor 'Amazon.com Inc.' -OsArch 'x86_64'
         { Register-JenvJdk -Home $evil } | Should -Throw -ErrorId 'JEnv.Alias.Conflict'
+        (Register-JenvJdk -Home $evil -Force).Action | Should -Be 'Updated'
+        (Get-JenvJdk -Name 'corretto64-1.8.0.442').Home | Should -Be $evil
+        Register-JenvJdk -Home $script:Jdk8 -Force | Out-Null
     }
     It 'adds an explicit alias without stealing others' {
         $r = Register-JenvJdk -Home $script:Jdk17 -Alias 'work17'
@@ -309,9 +346,30 @@ Describe 'JdkCommands add/remove/versions' {
         $ids = (Get-JenvJdk).CanonicalId
         ($ids -join ',') | Should -Be 'corretto64-1.8.0.442,temurin64-17.0.12'
     }
+    It 'sorts complete version segments numerically' {
+        $jdk179 = Join-Path $script:CRoot 'jdk17.0.9'
+        $jdk1710 = Join-Path $script:CRoot 'jdk17.0.10'
+        New-FakeJdk -Base $jdk179 -Version '17.0.9' -Implementor 'Eclipse Adoptium' -OsArch 'amd64'
+        New-FakeJdk -Base $jdk1710 -Version '17.0.10' -Implementor 'Eclipse Adoptium' -OsArch 'amd64'
+        Register-JenvJdk -Home $jdk179 -WarningAction SilentlyContinue | Out-Null
+        Register-JenvJdk -Home $jdk1710 -WarningAction SilentlyContinue | Out-Null
+        $versions = @(Get-JenvJdk | Where-Object { $_.Major -eq 17 }).NormalizedVersion
+        ($versions -join ',') | Should -Be '17.0.9,17.0.10,17.0.12'
+    }
     It 'refuses to remove the active version without --force' {
         Set-Content -LiteralPath (Join-Path $script:CRoot 'version') -Value '8' -NoNewline
-        { Unregister-JenvJdk -Name '8' } | Should -Throw
-        Unregister-JenvJdk -Name '8' -Force | Should -Not -BeNullOrEmpty
+        { Unregister-JenvJdk -Name '8' } | Should -Throw -ErrorId 'JEnv.Version.InUse'
+        { Unregister-JenvJdk -Name '8' -Force -WarningAction SilentlyContinue } | Should -Throw -ErrorId 'JEnv.Version.NotInstalled'
+        Get-JenvJdk -Name '8' | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'Facade argument validation' {
+    It 'rejects options with missing values and conflicting scoped arguments' {
+        { jenv add 'C:\missing' --alias } | Should -Throw -ErrorId 'JEnv.Command.Unknown'
+        { jenv which --version } | Should -Throw -ErrorId 'JEnv.Command.Unknown'
+        { jenv home 8 17 } | Should -Throw -ErrorId 'JEnv.Command.Unknown'
+        { jenv global 8 --unset } | Should -Throw -ErrorId 'JEnv.Command.Unknown'
+        { jenv init --install --uninstall } | Should -Throw -ErrorId 'JEnv.Command.Unknown'
     }
 }

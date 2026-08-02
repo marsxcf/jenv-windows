@@ -20,6 +20,13 @@ function Read-JenvVersionFile {
     [OutputType([string])]
     param([Parameter(Mandatory)][string]$Path)
 
+    $fileInfo = Get-Item -LiteralPath $Path -ErrorAction Stop
+    if ($fileInfo.Length -gt $script:JEnvVersionFileMaxBytes) {
+        throw (New-JenvErrorRecord -Id 'JEnv.VersionFile.Invalid' `
+            -Message "Version file '$Path' exceeds the $($script:JEnvVersionFileMaxBytes) byte limit." `
+            -Category LimitsExceeded -TargetObject $Path)
+    }
+
     $content = Read-JenvTextFile -Path $Path
     $content = $content -replace "`r`n", "`n"
     $lines = $content -split "`n"
@@ -89,7 +96,7 @@ function Resolve-JenvVersion {
     if (-not [string]::IsNullOrEmpty($ShellVersion)) {
         $requested = $ShellVersion.Trim()
         $originKind = 'Shell'
-    } elseif ($null -ne $CurrentDirectory -and (Test-JenvCurrentLocationIsFileSystem)) {
+    } elseif ($null -ne $CurrentDirectory) {
         $localFile = Find-JenvLocalVersionFile -Directory $CurrentDirectory
         if ($localFile) {
             $requested = Read-JenvVersionFile -Path $localFile
@@ -131,6 +138,15 @@ function Resolve-JenvVersion {
         throw (New-JenvErrorRecord -Id 'JEnv.Version.NotInstalled' `
             -Message "Java version '$requested' resolved to canonical '$canonical' which has no record." `
             -Category ObjectNotFound -TargetObject $requested)
+    }
+
+    $javaExe = Join-Path $rec.home 'bin\java.exe'
+    $javacExe = Join-Path $rec.home 'bin\javac.exe'
+    if (-not (Test-Path -LiteralPath $javaExe -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $javacExe -PathType Leaf)) {
+        throw (New-JenvErrorRecord -Id 'JEnv.Jdk.InvalidHome' `
+            -Message "Registered JDK '$canonical' at '$($rec.home)' no longer contains bin\java.exe and bin\javac.exe. Reinstall it or run 'jenv remove $canonical --force'." `
+            -Category ObjectNotFound -TargetObject $rec.home)
     }
 
     return [pscustomobject]@{

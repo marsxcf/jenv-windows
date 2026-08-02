@@ -48,7 +48,13 @@ function Invoke-JenvFacade {
             for ($i = 0; $i -lt $rest.Count; $i++) {
                 $a = $rest[$i]
                 if ($a -eq '--force') { $force = $true }
-                elseif ($a -eq '--alias' -or $a -eq '-a') { $i++; if ($i -lt $rest.Count) { $aliases.Add($rest[$i]) } }
+                elseif ($a -eq '--alias' -or $a -eq '-a') {
+                    $i++
+                    if ($i -ge $rest.Count -or [string]::IsNullOrWhiteSpace($rest[$i])) {
+                        throw (New-JenvErrorRecord -Id 'JEnv.Command.Unknown' -Message "jenv add: '$a' requires a value." -Category InvalidArgument -TargetObject $a)
+                    }
+                    $aliases.Add($rest[$i])
+                }
                 elseif ($a -like '--alias=*') { $aliases.Add($a.Substring('--alias='.Length)) }
                 elseif ($a -eq '--') { }
                 elseif ($a.StartsWith('-') -and $a.Length -gt 1) {
@@ -86,7 +92,7 @@ function Invoke-JenvFacade {
                 elseif ($a -eq '--json') { $json = $true }
                 else { throw (New-JenvErrorRecord -Id 'JEnv.Command.Unknown' -Message "jenv versions: unknown option '$a'." -Category InvalidArgument -TargetObject $a) }
             }
-            Format-JenvVersions -Bare:$bare -Json:$json
+            Format-JenvVersionList -Bare:$bare -Json:$json
             return
         }
 
@@ -103,7 +109,15 @@ function Invoke-JenvFacade {
 
         'home' {
             $ver = $null
-            foreach ($a in $rest) { if ($a -eq '--json') { throw (New-JenvErrorRecord -Id 'JEnv.Command.Unknown' -Message "jenv home: unknown option '$a'." -Category InvalidArgument -TargetObject $a) } elseif ($null -eq $ver) { $ver = $a } }
+            foreach ($a in $rest) {
+                if ($a.StartsWith('-') -and $a.Length -gt 1) {
+                    throw (New-JenvErrorRecord -Id 'JEnv.Command.Unknown' -Message "jenv home: unknown option '$a'." -Category InvalidArgument -TargetObject $a)
+                } elseif ($null -eq $ver) {
+                    $ver = $a
+                } else {
+                    throw (New-JenvErrorRecord -Id 'JEnv.Command.Unknown' -Message "jenv home: unexpected argument '$a'." -Category InvalidArgument -TargetObject $a)
+                }
+            }
             Get-JenvHome -Version $ver
             return
         }
@@ -112,9 +126,21 @@ function Invoke-JenvFacade {
             $cmdName = $null; $ver = $null
             for ($i = 0; $i -lt $rest.Count; $i++) {
                 $a = $rest[$i]
-                if ($a -eq '--version') { $i++; if ($i -lt $rest.Count) { $ver = $rest[$i] } }
+                if ($a -eq '--version') {
+                    $i++
+                    if ($i -ge $rest.Count -or [string]::IsNullOrWhiteSpace($rest[$i])) {
+                        throw (New-JenvErrorRecord -Id 'JEnv.Command.Unknown' -Message "jenv which: --version requires a value." -Category InvalidArgument -TargetObject '--version')
+                    }
+                    $ver = $rest[$i]
+                }
+                elseif ($a.StartsWith('-') -and $a.Length -gt 1) {
+                    throw (New-JenvErrorRecord -Id 'JEnv.Command.Unknown' -Message "jenv which: unknown option '$a'." -Category InvalidArgument -TargetObject $a)
+                }
                 elseif ($null -eq $cmdName) { $cmdName = $a }
                 else { throw (New-JenvErrorRecord -Id 'JEnv.Command.Unknown' -Message "jenv which: unexpected argument '$a'." -Category InvalidArgument -TargetObject $a) }
+            }
+            if ([string]::IsNullOrEmpty($cmdName)) {
+                throw (New-JenvErrorRecord -Id 'JEnv.Command.Unknown' -Message 'jenv which: a command name is required.' -Category InvalidArgument)
             }
             Resolve-JenvWhich -Command $cmdName -Version $ver
             return
@@ -134,8 +160,17 @@ function Invoke-JenvFacade {
             $ver = $null
             $cmdStart = -1
             for ($i = 0; $i -lt $rest.Count; $i++) {
-                if ($rest[$i] -eq '--version') { $i++; if ($i -lt $rest.Count) { $ver = $rest[$i] } }
+                if ($rest[$i] -eq '--version') {
+                    $i++
+                    if ($i -ge $rest.Count -or [string]::IsNullOrWhiteSpace($rest[$i])) {
+                        throw (New-JenvErrorRecord -Id 'JEnv.Command.Unknown' -Message 'jenv exec: --version requires a value.' -Category InvalidArgument -TargetObject '--version')
+                    }
+                    $ver = $rest[$i]
+                }
                 elseif ($rest[$i] -eq '--') { $cmdStart = $i + 1; break }
+                elseif ($rest[$i].StartsWith('-') -and $rest[$i].Length -gt 1) {
+                    throw (New-JenvErrorRecord -Id 'JEnv.Command.Unknown' -Message "jenv exec: unknown option '$($rest[$i])'." -Category InvalidArgument -TargetObject $rest[$i])
+                }
                 else { $cmdStart = $i; break }
             }
             if ($cmdStart -lt 0 -or $cmdStart -ge $rest.Count) {
@@ -155,6 +190,9 @@ function Invoke-JenvFacade {
                 elseif ($a -eq '--uninstall') { $uninstall = $true }
                 else { throw (New-JenvErrorRecord -Id 'JEnv.Command.Unknown' -Message "jenv init: unknown option '$a'." -Category InvalidArgument -TargetObject $a) }
             }
+            if ($install -and $uninstall) {
+                throw (New-JenvErrorRecord -Id 'JEnv.Command.Unknown' -Message 'jenv init: --install and --uninstall cannot be combined.' -Category InvalidArgument)
+            }
             Initialize-Jenv -Install:$install -Uninstall:$uninstall
             return
         }
@@ -163,19 +201,19 @@ function Invoke-JenvFacade {
             $json = $false
             foreach ($a in $rest) { if ($a -eq '--json') { $json = $true } else { throw (New-JenvErrorRecord -Id 'JEnv.Command.Unknown' -Message "jenv doctor: unknown option '$a'." -Category InvalidArgument -TargetObject $a) } }
             $checks = Test-JenvInstallation
+            $hasError = @($checks | Where-Object { $_.Status -eq 'ERROR' }).Count -gt 0
             if ($json) {
                 $payload = foreach ($c in $checks) { [ordered]@{ name = $c.Name; status = $c.Status; message = $c.Message } }
                 Write-Output (ConvertTo-JenvJson -Object $payload)
-                return
-            }
-            $hasError = $false
-            foreach ($c in $checks) {
-                $tag = switch ($c.Status) { 'OK' { '[OK]  ' } 'WARN' { '[WARN]' } 'ERROR' { '[ERROR]'; $hasError = $true } }
-                Write-Output ("{0} {1,-16} {2}" -f $tag, $c.Name, $c.Message)
+            } else {
+                foreach ($c in $checks) {
+                    $tag = switch ($c.Status) { 'OK' { '[OK]  ' } 'WARN' { '[WARN]' } 'ERROR' { '[ERROR]' } }
+                    Write-Output ("{0} {1,-16} {2}" -f $tag, $c.Name, $c.Message)
+                }
             }
             if ($hasError) {
                 throw (New-JenvErrorRecord -Id 'JEnv.Command.Unknown' `
-                    -Message 'jenv doctor reported one or more errors (see above).' -Category OperationStop)
+                    -Message 'jenv doctor reported one or more errors (see above).' -Category OperationStopped)
             }
             return
         }
@@ -207,6 +245,11 @@ function Invoke-JenvScopedSet {
         }
         elseif ($null -eq $version) { $version = $a }
         else { throw (New-JenvErrorRecord -Id 'JEnv.Command.Unknown' -Message "jenv ${Command}: unexpected argument '$a'." -Category InvalidArgument -TargetObject $a) }
+    }
+    if ($unset -and $null -ne $version) {
+        throw (New-JenvErrorRecord -Id 'JEnv.Command.Unknown' `
+            -Message "jenv ${Command}: --unset cannot be combined with a version." `
+            -Category InvalidArgument -TargetObject $version)
     }
     switch ($Command) {
         'global' { Set-JenvGlobal -Version $version -Unset:$unset }

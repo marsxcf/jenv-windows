@@ -58,6 +58,13 @@ Describe 'Profile bootstrap' {
         (& (Get-Module JEnv) { param($p) (Remove-JenvProfileBootstrap -Path $p).Action } $script:Prof) | Should -Be 'Removed'
         (Get-Content -LiteralPath $script:Prof -Raw) | Should -Not -Match 'jenv-windows initialize'
     }
+    It 'preserves unrelated LF whitespace during uninstall' {
+        $original = "function before { 'x' }`n`n`nfunction after { 'y' }`n"
+        [System.IO.File]::WriteAllText($script:Prof, $original, [System.Text.UTF8Encoding]::new($false))
+        & (Get-Module JEnv) { param($p) Add-JenvProfileBootstrap -Path $p } $script:Prof | Out-Null
+        & (Get-Module JEnv) { param($p) Remove-JenvProfileBootstrap -Path $p } $script:Prof | Out-Null
+        [System.IO.File]::ReadAllText($script:Prof) | Should -Be $original
+    }
     It 'uninstall is idempotent when absent' {
         (& (Get-Module JEnv) { param($p) (Remove-JenvProfileBootstrap -Path $p).Action } $script:Prof) | Should -Be 'Unchanged'
     }
@@ -114,6 +121,16 @@ Describe 'Prompt hook' {
             $env:JAVA_HOME = 'C:\user-set'
             __JenvPrompt | Out-Null
             $env:JAVA_HOME | Should -Be 'C:\user-set'
+        }
+    }
+    It 'reinstalls the hook after another prompt replaces it' {
+        InModuleScope JEnv {
+            Enable-JenvPromptHook
+            Set-Item -Path 'Function:\global:prompt' -Value { 'THEME> ' }
+            (Test-JenvPromptHookInstalled) | Should -BeFalse
+            Enable-JenvPromptHook
+            (Test-JenvPromptHookInstalled) | Should -BeTrue
+            (__JenvPrompt) | Should -Be 'THEME> '
         }
     }
 }

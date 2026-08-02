@@ -134,4 +134,14 @@ Describe 'jenv exec isolation' {
         $seen = jenv exec -- pwsh -NoProfile -Command "if (`$env:PATH -match ([regex]::Escape((Join-Path `$env:JAVA_HOME 'bin')))) { 'yes' } else { 'no' }"
         $seen | Should -Be 'yes'
     }
+    It 'uses the original system environment for an explicit system exec' {
+        $originalJava = $env:JAVA_HOME
+        jenv shell 17 | Out-Null
+        $seen = jenv exec --version system -- pwsh -NoProfile -Command '$env:JAVA_HOME'
+        $seen | Should -Be $originalJava
+        $env:JAVA_HOME | Should -Be $script:Jdk17
+    }
+    It 'uses a stable error when the target command is absent' {
+        { jenv exec -- definitely-not-a-jenv-command } | Should -Throw -ErrorId 'JEnv.Command.NotFound'
+    }
 }

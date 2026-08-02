@@ -15,7 +15,11 @@ $artifacts = Join-Path $repoRoot 'artifacts'
 
 if (-not (Test-Path -LiteralPath $manifestPath)) { throw "Module manifest not found at '$manifestPath'." }
 $manifestVersion = (Test-ModuleManifest -Path $manifestPath).Version.ToString()
-if ([string]::IsNullOrEmpty($Version)) { $Version = $manifestVersion }
+if ([string]::IsNullOrEmpty($Version)) {
+    $Version = $manifestVersion
+} elseif ($Version -ne $manifestVersion) {
+    throw "Requested build version '$Version' does not match manifest ModuleVersion '$manifestVersion'. Update JEnv.psd1 first."
+}
 Write-Host "Building jenv-windows $Version" -ForegroundColor Cyan
 
 # 1. Static analysis
@@ -40,15 +44,17 @@ if (-not $SkipTests) {
     Write-Host '-> Pester' -ForegroundColor Cyan
     $testFiles = @(Get-ChildItem -Path (Join-Path $repoRoot 'tests') -Filter 'JEnv.*.ps1' -File)
     $r = Invoke-Pester -Path $testFiles.FullName -PassThru -Output Minimal
-    if ($r.Failed -gt 0) { throw "Pester: $($r.Failed) test(s) failed." }
-    Write-Host "   $($r.Passed) passed, $($r.Failed) failed."
+    $failedCount = if ($null -ne $r.PSObject.Properties['FailedCount']) { $r.FailedCount } else { $r.Failed }
+    $passedCount = if ($null -ne $r.PSObject.Properties['PassedCount']) { $r.PassedCount } else { $r.Passed }
+    if ($failedCount -gt 0) { throw "Pester: $failedCount test(s) failed." }
+    Write-Host "   $passedCount passed, $failedCount failed."
 }
 
 # 3. Assemble staging copy
 $staging = Join-Path $artifacts "JEnv\$Version"
 if (Test-Path -LiteralPath $staging) { Remove-Item -Recurse -Force $staging }
 New-Item -ItemType Directory -Force -Path $staging | Out-Null
-Copy-Item -Path (Join-Path $src '*') -Destination $staging -Recurse -Force
+Get-ChildItem -LiteralPath $src -Force | Copy-Item -Destination $staging -Recurse -Force
 
 # 4. Validate the staged manifest
 Test-ModuleManifest -Path (Join-Path $staging 'JEnv.psd1') | Out-Null

@@ -6,7 +6,7 @@ Set-StrictMode -Version Latest
 
 # `jenv versions`: list registered JDKs, marking the active one. Supports --bare
 # (canonical ids only) and --json.
-function Format-JenvVersions {
+function Format-JenvVersionList {
     [CmdletBinding()]
     param(
         [Parameter()][switch]$Bare,
@@ -118,6 +118,22 @@ function Resolve-JenvRequiredVersion {
     if ([string]::IsNullOrEmpty($Version)) {
         $resolved = Resolve-JenvVersion -Root $Root
     } else {
+        $Version = $Version.Trim()
+        if (-not (Test-JenvVersionExpression -Expression $Version)) {
+            throw (New-JenvErrorRecord -Id 'JEnv.Version.NotInstalled' `
+                -Message "'$Version' is not a valid version expression." `
+                -Category InvalidArgument -TargetObject $Version)
+        }
+        if ([string]::Equals($Version, 'system', [System.StringComparison]::OrdinalIgnoreCase)) {
+            return [pscustomobject]@{
+                PSTypeName       = 'JEnv.ResolvedVersion'
+                RequestedVersion = $Version
+                CanonicalId      = $null
+                Home             = $null
+                OriginKind       = 'System'
+                OriginPath       = $null
+            }
+        }
         $reg = Read-JenvRegistry -Root $Root
         $canonical = Resolve-JenvCanonicalId -Name $Version -Registry $reg
         if ([string]::IsNullOrEmpty($canonical)) {
@@ -161,8 +177,10 @@ function Set-JenvGlobal {
 
     if ($Unset) {
         if (-not $PSCmdlet.ShouldProcess($file, 'Remove global version file')) { return }
-        if (Test-Path -LiteralPath $file -PathType Leaf) {
-            Remove-Item -LiteralPath $file -Force
+        Invoke-WithJenvRegistryLock -Root $Root -ScriptBlock {
+            if (Test-Path -LiteralPath $file -PathType Leaf) {
+                Remove-Item -LiteralPath $file -Force
+            }
         }
         Sync-JenvEnvironment -Root $Root -Force
         return
@@ -177,14 +195,18 @@ function Set-JenvGlobal {
         return
     }
 
-    Resolve-JenvRequiredVersion -Version $Version -Root $Root | Out-Null
     if (-not $PSCmdlet.ShouldProcess($file, "Set global version to '$Version'")) { return }
-    $backup = Join-Path (Get-JenvBackupsDir -Root $Root) 'version.bak'
-    Write-JenvVersionExpressionFile -Path $file -Expression $Version -BackupPath $backup
+    Invoke-WithJenvRegistryLock -Root $Root -ScriptBlock {
+        # Validate under the same lock used for the write, so a concurrent
+        # registry mutation cannot make the new global value stale.
+        Resolve-JenvRequiredVersion -Version $Version -Root $Root | Out-Null
+        $backup = Join-Path (Get-JenvBackupsDir -Root $Root) 'version.bak'
+        Write-JenvVersionExpressionFile -Path $file -Expression $Version -BackupPath $backup
+    }
     Sync-JenvEnvironment -Root $Root -Force
 }
 
-# `jenv local [version|--unset]`: write or remove ./​.java-version, then re-sync.
+# `jenv local [version|--unset]`: write or remove ./.java-version, then re-sync.
 function Set-JenvLocal {
     [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'Low')]
     param(
@@ -213,7 +235,7 @@ function Set-JenvLocal {
         if ($found) {
             Write-Output ("{0} (in {1})" -f (Read-JenvVersionFile -Path $found), $found)
         } else {
-            Write-Output 'system'
+            Write-Output 'no local version configured'
         }
         return
     }
@@ -242,7 +264,7 @@ function Set-JenvShell {
 
     if ([string]::IsNullOrEmpty($Version)) {
         if ([string]::IsNullOrEmpty($env:JENV_VERSION)) {
-            Write-Output 'system'
+            Write-Output 'no shell version configured'
         } else {
             Write-Output $env:JENV_VERSION
         }

@@ -225,6 +225,7 @@ LastResolutionFingerprint
 | `JEnv.Jdk.InvalidHome` | 路径不是有效 JDK home。 |
 | `JEnv.Jdk.ProbeFailed` | 无法取得版本元数据。 |
 | `JEnv.Version.NotInstalled` | 版本或别名不存在。 |
+| `JEnv.Version.InUse` | 版本仍被 shell、local 或 global 配置引用。 |
 | `JEnv.VersionFile.Invalid` | 版本文件格式非法。 |
 | `JEnv.Alias.Conflict` | 显式别名已由其他 JDK 使用。 |
 | `JEnv.Registry.Invalid` | `versions.json` 无法解析或不符合模式。 |

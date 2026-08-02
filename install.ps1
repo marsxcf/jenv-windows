@@ -19,8 +19,15 @@ $ver = (Test-ModuleManifest -Path $manifestPath).Version.ToString()
 # CurrentUser module base. Prefer the first PSModulePath entry under $HOME so a
 # redirected Documents folder (e.g. OneDrive) is handled.
 $cuBase = $null
+$homePrefix = [System.IO.Path]::GetFullPath($HOME).TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
 foreach ($p in ($env:PSModulePath -split ';')) {
-    if ($p -and ($p -like "$HOME*")) { $cuBase = $p; break }
+    if (-not [string]::IsNullOrWhiteSpace($p)) {
+        $candidateBase = [System.IO.Path]::GetFullPath($p)
+        if ($candidateBase.StartsWith($homePrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+            $cuBase = $candidateBase
+            break
+        }
+    }
 }
 if (-not $cuBase) { $cuBase = Join-Path $HOME 'Documents\PowerShell\Modules' }
 $dest = Join-Path $cuBase "JEnv\$ver"
@@ -32,9 +39,9 @@ if (Test-Path -LiteralPath $dest) {
 }
 if (-not $PSCmdlet.ShouldProcess($dest, "Install JEnv $ver")) { return }
 
-if (Test-Path -LiteralPath $dest) { Remove-Item -Recurse -Force $dest }
-New-Item -ItemType Directory -Force -Path (Split-Path $dest -Parent) | Out-Null
-Copy-Item -Path (Join-Path $src '*') -Destination $dest -Recurse -Force
+if (Test-Path -LiteralPath $dest) { Remove-Item -Recurse -Force -LiteralPath $dest }
+New-Item -ItemType Directory -Force -Path $dest | Out-Null
+Get-ChildItem -LiteralPath $src -Force | Copy-Item -Destination $dest -Recurse -Force
 Test-ModuleManifest -Path (Join-Path $dest 'JEnv.psd1') | Out-Null
 
 Write-Host "Installed JEnv $ver to $dest" -ForegroundColor Green

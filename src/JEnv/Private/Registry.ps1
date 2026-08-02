@@ -9,6 +9,7 @@ $script:JEnvVersionFileMaxBytes = 4 * 1024        # 4 KiB
 
 function New-JenvRegistrySkeleton {
     [CmdletBinding()]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Pure in-memory object factory; it does not modify persistent state.')]
     [OutputType([System.Collections.Specialized.OrderedDictionary])]
     param()
     return ([ordered]@{
@@ -17,6 +18,17 @@ function New-JenvRegistrySkeleton {
         jdks          = [ordered]@{}
         aliases       = [ordered]@{}
     })
+}
+
+function Test-JenvIntegerValue {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param([Parameter(Mandatory)]$Value)
+
+    return ($Value -is [byte] -or $Value -is [sbyte] -or
+            $Value -is [int16] -or $Value -is [uint16] -or
+            $Value -is [int32] -or $Value -is [uint32] -or
+            $Value -is [int64] -or $Value -is [uint64])
 }
 
 # Validate a parsed registry object in place. Throws JEnv.Registry.Invalid on any
@@ -29,23 +41,47 @@ function Test-JenvRegistry {
         throw (New-JenvErrorRecord -Id 'JEnv.Registry.Invalid' `
             -Message 'Registry is empty or null.' -Category InvalidData)
     }
-    if ($Registry.schemaVersion -ine '1' -and ($Registry.schemaVersion -isnot [int] -or $Registry.schemaVersion -ne 1)) {
+    if (-not $Registry.Contains('schemaVersion') -or
+        -not (Test-JenvIntegerValue -Value $Registry.schemaVersion) -or
+        [long]$Registry.schemaVersion -ne 1) {
         throw (New-JenvErrorRecord -Id 'JEnv.Registry.Invalid' `
             -Message "Unsupported registry schemaVersion '$($Registry.schemaVersion)'. Only schemaVersion 1 is supported." `
             -Category InvalidData -TargetObject $Registry.schemaVersion)
     }
 
+    if (-not $Registry.Contains('revision') -or
+        -not (Test-JenvIntegerValue -Value $Registry.revision) -or
+        [long]$Registry.revision -lt 0 -or [long]$Registry.revision -gt [int]::MaxValue) {
+        throw (New-JenvErrorRecord -Id 'JEnv.Registry.Invalid' `
+            -Message "Registry revision must be a non-negative integer." `
+            -Category InvalidData -TargetObject $Registry.revision)
+    }
+
     $jdks = $Registry.jdks
-    if ($null -eq $jdks) {
+    if ($null -eq $jdks -or $jdks -isnot [System.Collections.IDictionary]) {
         throw (New-JenvErrorRecord -Id 'JEnv.Registry.Invalid' `
             -Message "Registry is missing the 'jdks' object." -Category InvalidData)
     }
 
+    $aliases = $Registry.aliases
+    if ($null -eq $aliases -or $aliases -isnot [System.Collections.IDictionary]) {
+        throw (New-JenvErrorRecord -Id 'JEnv.Registry.Invalid' `
+            -Message "Registry is missing the 'aliases' object." -Category InvalidData)
+    }
+
     # Required per-JDK fields.
     $required = @('home', 'version', 'normalizedVersion', 'major', 'vendor', 'vendorId', 'architecture', 'registeredAt', 'updatedAt')
+    $seenIds = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     foreach ($id in @($jdks.Keys)) {
+        if ($id -isnot [string] -or -not (Test-JenvVersionExpression -Expression $id) -or
+            [string]::Equals($id, 'system', [System.StringComparison]::OrdinalIgnoreCase) -or
+            -not $seenIds.Add($id)) {
+            throw (New-JenvErrorRecord -Id 'JEnv.Registry.Invalid' `
+                -Message "Registry contains an invalid or duplicate canonical id '$id'." `
+                -Category InvalidData -TargetObject $id)
+        }
         $rec = $jdks[$id]
-        if ($null -eq $rec) {
+        if ($null -eq $rec -or $rec -isnot [System.Collections.IDictionary]) {
             throw (New-JenvErrorRecord -Id 'JEnv.Registry.Invalid' `
                 -Message "Registry JDK '$id' has no record." -Category InvalidData -TargetObject $id)
         }
@@ -55,22 +91,65 @@ function Test-JenvRegistry {
                     -Message "Registry JDK '$id' is missing required field '$field'." -Category InvalidData -TargetObject $id)
             }
         }
-        if (-not (Test-JenvHomePathSafe -HomePath $rec.home)) {
+        if ($rec.home -isnot [string] -or -not (Test-JenvHomePathSafe -HomePath $rec.home) -or
+            -not [System.IO.Path]::IsPathRooted($rec.home) -or
+            -not [string]::Equals($rec.home, (ConvertTo-JenvNormalizedPath -Path $rec.home), [System.StringComparison]::Ordinal)) {
             throw (New-JenvErrorRecord -Id 'JEnv.Registry.Invalid' `
-                -Message "Registry JDK '$id' has an unsafe home path (must not contain ';', CR or LF)." `
+                -Message "Registry JDK '$id' must have a normalized, absolute, safe home path." `
                 -Category InvalidData -TargetObject $rec.home)
+        }
+        foreach ($field in @('version', 'normalizedVersion', 'vendor', 'vendorId', 'architecture')) {
+            if ($rec[$field] -isnot [string] -or [string]::IsNullOrWhiteSpace($rec[$field])) {
+                throw (New-JenvErrorRecord -Id 'JEnv.Registry.Invalid' `
+                    -Message "Registry JDK '$id' field '$field' must be a non-empty string." `
+                    -Category InvalidData -TargetObject $id)
+            }
+        }
+        if (-not (Test-JenvIntegerValue -Value $rec.major) -or [long]$rec.major -le 0) {
+            throw (New-JenvErrorRecord -Id 'JEnv.Registry.Invalid' `
+                -Message "Registry JDK '$id' major must be a positive integer." `
+                -Category InvalidData -TargetObject $id)
+        }
+        if ($rec.architecture -notin @('x86', 'x64', 'arm64', 'unknown')) {
+            throw (New-JenvErrorRecord -Id 'JEnv.Registry.Invalid' `
+                -Message "Registry JDK '$id' has invalid architecture '$($rec.architecture)'." `
+                -Category InvalidData -TargetObject $id)
+        }
+        foreach ($dateField in @('registeredAt', 'updatedAt')) {
+            $parsedDate = [DateTimeOffset]::MinValue
+            if ($rec[$dateField] -is [DateTimeOffset]) {
+                $parsedDate = [DateTimeOffset]$rec[$dateField]
+            } elseif ($rec[$dateField] -is [DateTime]) {
+                $parsedDate = [DateTimeOffset]([DateTime]$rec[$dateField])
+            } elseif ($rec[$dateField] -isnot [string] -or
+                [string]::IsNullOrWhiteSpace($rec[$dateField]) -or
+                -not [DateTimeOffset]::TryParse(
+                    [string]$rec[$dateField],
+                    [System.Globalization.CultureInfo]::InvariantCulture,
+                    [System.Globalization.DateTimeStyles]::RoundtripKind,
+                    [ref]$parsedDate)) {
+                throw (New-JenvErrorRecord -Id 'JEnv.Registry.Invalid' `
+                    -Message "Registry JDK '$id' field '$dateField' is not an ISO 8601 timestamp." `
+                    -Category InvalidData -TargetObject $id)
+            }
+            $rec[$dateField] = $parsedDate.ToUniversalTime().ToString('o')
         }
     }
 
     # Aliases must point at existing canonical IDs (no dangling references).
-    $aliases = $Registry.aliases
-    if ($null -ne $aliases) {
-        foreach ($alias in @($aliases.Keys)) {
-            $target = $aliases[$alias]
-            if (-not $jdks.Contains($target)) {
-                throw (New-JenvErrorRecord -Id 'JEnv.Registry.Invalid' `
-                    -Message "Alias '$alias' points to unknown JDK '$target'." -Category InvalidData -TargetObject $alias)
-            }
+    $seenAliases = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($alias in @($aliases.Keys)) {
+        if ($alias -isnot [string] -or -not (Test-JenvVersionExpression -Expression $alias) -or
+            [string]::Equals($alias, 'system', [System.StringComparison]::OrdinalIgnoreCase) -or
+            -not $seenAliases.Add($alias)) {
+            throw (New-JenvErrorRecord -Id 'JEnv.Registry.Invalid' `
+                -Message "Registry contains an invalid or duplicate alias '$alias'." `
+                -Category InvalidData -TargetObject $alias)
+        }
+        $target = $aliases[$alias]
+        if ($target -isnot [string] -or [string]::IsNullOrEmpty((Resolve-JenvCanonicalId -Name $target -Registry ([ordered]@{ jdks = $jdks; aliases = [ordered]@{} })))) {
+            throw (New-JenvErrorRecord -Id 'JEnv.Registry.Invalid' `
+                -Message "Alias '$alias' points to unknown JDK '$target'." -Category InvalidData -TargetObject $alias)
         }
     }
 }
@@ -187,7 +266,7 @@ function Invoke-WithJenvRegistryLock {
         return (& $ScriptBlock)
     } finally {
         if ($owned) {
-            try { $mutex.ReleaseMutex() } catch { }
+            try { $mutex.ReleaseMutex() } catch { Write-Verbose "Unable to release the jenv registry mutex cleanly: $_" }
         }
         $mutex.Dispose()
     }
@@ -258,6 +337,9 @@ function Write-JenvRegistryAtomic {
 # Returns whatever the mutation scriptblock returns.
 function Update-JenvRegistry {
     [CmdletBinding()]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Private transaction boundary; public callers implement ShouldProcess before invoking it.')]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'Mutation', Justification = 'Used inside the registry-lock script block through PowerShell dynamic scope.')]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'DoNotBumpRevision', Justification = 'Used inside the registry-lock script block through PowerShell dynamic scope.')]
     param(
         [Parameter(Mandatory)][scriptblock]$Mutation,
         [Parameter()][string]$Root = (Get-JenvRoot),
@@ -266,6 +348,13 @@ function Update-JenvRegistry {
     return (Invoke-WithJenvRegistryLock -Root $Root -ScriptBlock {
         $reg = Read-JenvRegistry -Root $Root
         $result = & $Mutation $reg
+        $registryChanged = $true
+        $publicResult = $result
+        if ($null -ne $result -and $result.PSObject.Properties['RegistryChanged']) {
+            $registryChanged = [bool]$result.RegistryChanged
+            $publicResult = $result.Result
+        }
+        if (-not $registryChanged) { return $publicResult }
         Test-JenvRegistry -Registry $reg
         if (-not $DoNotBumpRevision) {
             if ($null -eq $reg.revision -or ($reg.revision -isnot [int] -and $reg.revision -isnot [long])) {
@@ -276,6 +365,6 @@ function Update-JenvRegistry {
         $json = ConvertTo-JenvJson -Object $reg
         $backup = Join-Path (Get-JenvBackupsDir -Root $Root) 'versions.json.bak'
         Write-JenvFileAtomic -Path (Get-JenvRegistryPath -Root $Root) -Content $json -BackupPath $backup
-        return $result
+        return $publicResult
     })
 }

@@ -15,6 +15,7 @@ function Initialize-Jenv {
     if ($Uninstall) {
         Remove-JenvProfileBootstrap | Out-Null
         Disable-JenvPromptHook
+        Reset-JenvSessionState
         return
     }
 

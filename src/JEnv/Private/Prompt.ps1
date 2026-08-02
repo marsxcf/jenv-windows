@@ -43,6 +43,20 @@ function Test-JenvIsInteractiveHost {
     } catch { return $false }
 }
 
+function Test-JenvPromptHookInstalled {
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param()
+
+    if ($null -eq $script:JEnvSession -or -not $script:JEnvSession.PromptInstalled -or
+        $null -eq $script:JEnvSession.PromptHook) {
+        return $false
+    }
+    $currentPrompt = Get-Command -Name prompt -CommandType Function -ErrorAction SilentlyContinue
+    return ($null -ne $currentPrompt -and
+            [object]::ReferenceEquals($currentPrompt.ScriptBlock, $script:JEnvSession.PromptHook))
+}
+
 # The hook body. Assigned to global:prompt. Never writes to the success stream
 # (would corrupt the prompt); errors are swallowed to Write-Debug.
 function __JenvPrompt {
@@ -51,8 +65,14 @@ function __JenvPrompt {
         if ($state.Initialized) {
             $fp = Get-JenvResolutionFingerprint
             if (-not [string]::Equals($fp, $state.LastFingerprint, [System.StringComparison]::Ordinal)) {
-                try { Sync-JenvEnvironment -Force } catch { Write-Debug "jenv sync failed: $_" }
-                $state.LastFingerprint = $fp
+                try {
+                    Sync-JenvEnvironment -Force
+                    $state.LastFingerprint = $fp
+                } catch {
+                    # Do not cache a failed resolution. The next prompt must
+                    # retry even when the filesystem fingerprint is unchanged.
+                    Write-Debug "jenv sync failed: $_"
+                }
             }
         }
     } catch { Write-Debug "jenv prompt hook error: $_" }
@@ -69,12 +89,12 @@ function Enable-JenvPromptHook {
     [CmdletBinding()]
     param()
     $state = Get-JenvSessionState
-    if ($state.PromptInstalled) { return }
+    if (Test-JenvPromptHookInstalled) { return }
 
     # Read the current prompt via Get-Command (visible from module scope, unlike
     # Get-Item Function:\global:prompt which may resolve to the module's view).
     $cur = Get-Command -Name prompt -CommandType Function -ErrorAction SilentlyContinue
-    if ($cur -and ($cur.Definition -notmatch 'JenvResolutionFingerprint|__JenvPrompt')) {
+    if ($cur -and -not [object]::ReferenceEquals($cur.ScriptBlock, $state.PromptHook)) {
         $state.PreviousPrompt = $cur.ScriptBlock
     }
     $state.PromptHook = ${function:__JenvPrompt}
@@ -85,15 +105,18 @@ function Enable-JenvPromptHook {
 function Disable-JenvPromptHook {
     [CmdletBinding()]
     param()
-    $state = Get-JenvSessionState
+    if ($null -eq $script:JEnvSession) { return }
+    $state = $script:JEnvSession
     if (-not $state.PromptInstalled) { return }
 
     # Only restore if the current prompt is still our hook (do not clobber a
     # prompt another tool installed after us).
     $cur = Get-Command -Name prompt -CommandType Function -ErrorAction SilentlyContinue
-    if ($cur -and $cur.Definition -match '__JenvPrompt') {
+    if ($cur -and [object]::ReferenceEquals($cur.ScriptBlock, $state.PromptHook)) {
         if ($state.PreviousPrompt) {
             Set-Item -Path 'Function:\global:prompt' -Value $state.PreviousPrompt
+        } else {
+            Remove-Item -Path 'Function:\global:prompt' -ErrorAction SilentlyContinue
         }
     }
     $state.PromptInstalled = $false

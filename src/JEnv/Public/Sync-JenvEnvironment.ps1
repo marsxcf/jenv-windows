@@ -28,7 +28,8 @@ function Sync-JenvEnvironment {
         $firstEntry = if (-not [string]::IsNullOrEmpty($env:PATH)) { ($env:PATH -split [System.IO.Path]::PathSeparator)[0] } else { '' }
         $pathOk = Test-JenvPathsEqual -ReferencePath $firstEntry -DifferencePath $targetBin
         $javaOk = Test-JenvPathsEqual -ReferencePath $env:JAVA_HOME -DifferencePath $resolved.Home
-        if ([string]::Equals($state.LastSyncedCanonical, $resolved.CanonicalId, [System.StringComparison]::OrdinalIgnoreCase) -and $pathOk -and $javaOk) {
+        $jdkOk = Test-JenvPathsEqual -ReferencePath $env:JDK_HOME -DifferencePath $resolved.Home
+        if ([string]::Equals($state.LastSyncedCanonical, $resolved.CanonicalId, [System.StringComparison]::OrdinalIgnoreCase) -and $pathOk -and $javaOk -and $jdkOk) {
             return
         }
     }

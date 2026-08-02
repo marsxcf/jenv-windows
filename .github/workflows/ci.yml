@@ -1,0 +1,61 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: PowerShell ${{ matrix.name }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: '7.4'
+            install74: true
+          - name: latest
+            install74: false
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install latest PowerShell 7.4 patch
+        if: matrix.install74
+        shell: pwsh
+        run: |
+          $releases = Invoke-RestMethod 'https://api.github.com/repos/PowerShell/PowerShell/releases?per_page=100'
+          $release = $releases | Where-Object { $_.tag_name -match '^v7\.4\.\d+$' } | Select-Object -First 1
+          if (-not $release) { throw 'Could not find a stable PowerShell 7.4 release.' }
+          $asset = $release.assets | Where-Object { $_.name -match 'win-x64\.zip$' } | Select-Object -First 1
+          if (-not $asset) { throw "No win-x64 zip found for $($release.tag_name)." }
+          $destination = Join-Path $env:RUNNER_TEMP 'pwsh-7.4'
+          $archive = Join-Path $env:RUNNER_TEMP 'pwsh-7.4.zip'
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $archive
+          Expand-Archive -LiteralPath $archive -DestinationPath $destination
+          $destination | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      - name: Verify PowerShell version
+        shell: pwsh
+        run: |
+          $PSVersionTable
+          if ('${{ matrix.name }}' -eq '7.4' -and $PSVersionTable.PSVersion.Minor -ne 4) {
+            throw "Expected PowerShell 7.4, got $($PSVersionTable.PSVersion)."
+          }
+
+      - name: Install test dependencies
+        shell: pwsh
+        run: |
+          Set-PSRepository PSGallery -InstallationPolicy Trusted
+          Install-Module Pester -Scope CurrentUser -Force -SkipPublisherCheck -AllowClobber
+          Install-Module PSScriptAnalyzer -Scope CurrentUser -Force -SkipPublisherCheck
+
+      - name: Analyze, test, and package
+        shell: pwsh
+        run: ./build.ps1

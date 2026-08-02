@@ -10,6 +10,7 @@ Set-StrictMode -Version Latest
 #   JEnv.Jdk.InvalidHome
 #   JEnv.Jdk.ProbeFailed
 #   JEnv.Version.NotInstalled
+#   JEnv.Version.InUse
 #   JEnv.VersionFile.Invalid
 #   JEnv.Alias.Conflict
 #   JEnv.Registry.Invalid
@@ -23,6 +24,7 @@ Set-StrictMode -Version Latest
 
 function New-JenvErrorRecord {
     [CmdletBinding()]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Pure ErrorRecord factory; it does not modify state.')]
     [OutputType([System.Management.Automation.ErrorRecord])]
     param(
         [Parameter(Mandatory)]

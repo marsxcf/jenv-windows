@@ -14,6 +14,27 @@ function Test-JenvInstallation {
         $results.Add([pscustomobject]@{ PSTypeName = 'JEnv.DiagnosticResult'; Name = $Name; Status = $Status; Message = $Message })
     }
 
+    function Test-DirectoryWritableByCurrentUser([string]$Path) {
+        try {
+            $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
+            $principal = [System.Security.Principal.WindowsPrincipal]::new(
+                [System.Security.Principal.WindowsIdentity]::GetCurrent())
+            $writeMask = [System.Security.AccessControl.FileSystemRights]::Write
+            $allowed = $false
+            foreach ($rule in $acl.Access) {
+                if (-not $principal.IsInRole($rule.IdentityReference)) { continue }
+                if (($rule.FileSystemRights -band $writeMask) -eq 0) { continue }
+                if ($rule.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Deny) {
+                    return $false
+                }
+                $allowed = $true
+            }
+            return $allowed
+        } catch {
+            return $false
+        }
+    }
+
     # Platform
     if (-not $IsWindows) {
         Add-Check 'Platform' 'ERROR' 'jenv-windows requires Windows.'
@@ -28,17 +49,22 @@ function Test-JenvInstallation {
     # Root
     $resolvedRoot = $null
     try {
-        $resolvedRoot = Get-JenvRoot
+        if (-not [System.IO.Path]::IsPathRooted($Root) -or $Root -match '[\r\n]') {
+            throw "JENV_ROOT must be an absolute filesystem path without CR or LF."
+        }
+        $resolvedRoot = ConvertTo-JenvNormalizedPath -Path $Root
         if (-not (Test-Path -LiteralPath $resolvedRoot -PathType Container)) {
             Add-Check 'Root' 'WARN' "JENV_ROOT '$resolvedRoot' does not exist yet (created on first write)."
         } else {
-            $testFile = Join-Path $resolvedRoot ([System.IO.Path]::GetRandomFileName())
             try {
-                Set-Content -LiteralPath $testFile -Value 'x' -NoNewline -ErrorAction Stop
-                Remove-Item -LiteralPath $testFile -Force -ErrorAction SilentlyContinue
-                Add-Check 'Root' 'OK' "JENV_ROOT = $resolvedRoot"
+                Get-ChildItem -LiteralPath $resolvedRoot -ErrorAction Stop | Select-Object -First 1 | Out-Null
+                if (Test-DirectoryWritableByCurrentUser -Path $resolvedRoot) {
+                    Add-Check 'Root' 'OK' "JENV_ROOT = $resolvedRoot"
+                } else {
+                    Add-Check 'Root' 'ERROR' "JENV_ROOT '$resolvedRoot' is not writable by the current user."
+                }
             } catch {
-                Add-Check 'Root' 'ERROR' "JENV_ROOT '$resolvedRoot' is not writable."
+                Add-Check 'Root' 'ERROR' "JENV_ROOT '$resolvedRoot' is not readable."
                 return $results.ToArray()
             }
         }
@@ -65,7 +91,7 @@ function Test-JenvInstallation {
         $javacExe = Join-Path $rec.home 'bin\javac.exe'
         if (-not (Test-Path -LiteralPath $javaExe -PathType Leaf) -or -not (Test-Path -LiteralPath $javacExe -PathType Leaf)) {
             $dead++
-            Add-Check "Jdk:$id" 'WARN' "Missing bin\java.exe or bin\javac.exe at '$($rec.home)'. Run 'jenv remove $id'."
+            Add-Check "Jdk:$id" 'ERROR' "Missing bin\java.exe or bin\javac.exe at '$($rec.home)'. Run 'jenv remove $id --force'."
         }
     }
     if ($dead -eq 0 -and @($reg.jdks.Keys).Count -gt 0) { Add-Check 'RegisteredJdks' 'OK' 'All registered JDK homes are intact.' }
@@ -129,9 +155,8 @@ function Test-JenvInstallation {
     }
 
     # PromptHook
-    $state = $null
-    try { $state = Get-JenvSessionState } catch { }
-    if ($state -and $state.PromptInstalled) {
+    $state = $script:JEnvSession
+    if ($state -and (Test-JenvPromptHookInstalled)) {
         Add-Check 'PromptHook' 'OK' 'Prompt hook is installed.'
     } else {
         Add-Check 'PromptHook' 'WARN' "Prompt hook not installed in this session. Run 'jenv init'."
