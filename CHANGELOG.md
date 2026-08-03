@@ -11,7 +11,9 @@ major version.
 
 ## [Unreleased]
 
-### Added — 0.1.0 (in development)
+## [0.1.0] - 2026-08-03
+
+### Added
 
 - JDK registry with canonical IDs and aliases (`add`, `remove`, `versions`).
 - Three-scope version selection: `shell` > `local` (`.java-version`) > `global` > `system`.
