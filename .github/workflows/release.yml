@@ -50,22 +50,49 @@ jobs:
         shell: pwsh
         run: ./build.ps1 -Version ${{ steps.ver.outputs.version }}
 
-      - name: Install Inno Setup 7 (64-bit)
+      - name: Install Inno Setup 7
         shell: pwsh
         run: |
-          $iscc = Join-Path $env:ProgramFiles 'Inno Setup 7\ISCC.exe'
-          if (-not (Test-Path -LiteralPath $iscc)) {
+          # ISCC.exe can land in different places: the x64 installer targets
+          # Program Files, but the runner image may already ship Inno Setup under
+          # Program Files (x86), and winget reports "Successfully installed" even
+          # when it skipped the install as already-present. Locate the compiler
+          # dynamically instead of hard-coding one path.
+          function Find-InnoSetupCompiler {
+            $roots = @(
+              $env:ProgramFiles,
+              ${env:ProgramFiles(x86)},
+              (Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Packages')
+            ) | Where-Object { $_ }
+            foreach ($root in $roots) {
+              $candidate = Join-Path $root 'Inno Setup 7\ISCC.exe'
+              if (Test-Path -LiteralPath $candidate) { return $candidate }
+            }
+            foreach ($root in $roots) {
+              $hit = Get-ChildItem -LiteralPath $root -Filter 'ISCC.exe' -Recurse -Depth 3 -ErrorAction SilentlyContinue |
+                     Where-Object { $_.DirectoryName -match 'Inno Setup 7' } |
+                     Select-Object -ExpandProperty FullName -First 1
+              if ($hit) { return $hit }
+            }
+            return $null
+          }
+
+          $iscc = Find-InnoSetupCompiler
+          if (-not $iscc) {
+            Write-Host 'Inno Setup 7 not found; installing via winget...'
             winget install --id JRSoftware.InnoSetup.7 --exact --source winget `
               --silent --accept-package-agreements --accept-source-agreements `
               --disable-interactivity
+            $iscc = Find-InnoSetupCompiler
           }
-          if (-not (Test-Path -LiteralPath $iscc)) {
-            throw "Inno Setup 7 compiler was not found at '$iscc'."
+          if (-not $iscc) {
+            throw 'Inno Setup 7 compiler (ISCC.exe) was not found under Program Files after install.'
           }
           $compilerBanner = (& $iscc /? 2>&1 | Select-Object -First 1)
           if ($compilerBanner -notmatch '^Inno Setup 7 ') {
             throw "Expected Inno Setup 7, found '$compilerBanner'."
           }
+          Write-Host "Found: $iscc"
           Write-Host $compilerBanner
           "INNO_ISCC=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Append
 
