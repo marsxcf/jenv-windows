@@ -17,8 +17,8 @@ It targets **PowerShell 7.4+** on Windows and does **not** use Java command shim
 
 ## Status
 
-0.1 — under development. See [`docs/`](./docs) for the authoritative
-specification, and [CHANGELOG.md](./CHANGELOG.md) for progress.
+0.1.0 released. See [`docs/`](./docs) for the authoritative specification, and
+[CHANGELOG.md](./CHANGELOG.md) for progress.
 
 ## Quick start
 
@@ -45,13 +45,23 @@ JDK switches automatically on the next prompt.
 
 ## Install
 
-> The packaging pipeline is part of 0.1. Once the first release is published:
+Requires PowerShell 7.4+.
 
 ```powershell
-winget install jenv-windows.jenv-windows
-# Restart your terminal, then:
+# Install from PowerShell Gallery
+Install-Module JEnv -Scope CurrentUser
+
+# Hook your PowerShell profile and initialize the session (run once, after install)
+jenv init --install
+
+# Restart your terminal, then verify:
 jenv doctor
 ```
+
+Alternatively, download the per-user Inno Setup installer
+(`jenv-windows-<version>-setup.exe`) from the
+[latest GitHub Release](https://github.com/marsxcf/jenv-windows/releases) — it
+installs the module and runs `jenv init --install` for you.
 
 For local development, see [docs/development.md](./docs/development.md) and run
 `./build.ps1`.

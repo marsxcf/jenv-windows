@@ -41,6 +41,3 @@ TestResults/
 # Inno Setup build output
 packaging/Output/
 *.exe.tmp
-
-# Rendered WinGet manifest output (generated at release time)
-packaging/winget/out/
