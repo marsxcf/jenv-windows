@@ -252,7 +252,8 @@ The following features are outside the 0.1 contract but may be added without bre
 
 - `jenv discover` for common JDK installation paths and registry entries.
 - PowerShell argument completion.
-- Publishing to PowerShell Gallery, Scoop, and WinGet.
+- Scoop bucket distribution. (PowerShell Gallery is the primary channel; winget
+  is not viable for a script-only PowerShell module.)
 - A self-contained .NET shim that resolves `.java-version` when `java.exe` runs.
 - A separate CMD adapter.
 

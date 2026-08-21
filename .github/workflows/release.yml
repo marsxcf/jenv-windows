@@ -1,11 +1,13 @@
 name: release
 
-# Builds the module, runs analysis + tests, packages a per-user Inno Setup
-# installer, publishes a GitHub Release with the installer + module zip, and
-# renders the WinGet manifest (with SHA256) for submission to winget-pkgs.
+# Builds the module, runs analysis + tests, publishes it to PowerShell Gallery
+# (Install-Module JEnv), and publishes a GitHub Release with the Inno Setup
+# convenience installer + module zip.
 #
-# The first release to winget-pkgs is a manual PR (new PackageIdentifier);
-# subsequent versions can be auto-PR'd via winget-pkgs-automation.
+# PSGallery publish is gated on the PSGALLERY_API_KEY secret and skips if the
+# version is already published (PSGallery versions are immutable). winget is
+# not a target: winget-pkgs rejected this package under the noScripts policy
+# because it is a PowerShell module with no compiled binary.
 
 on:
   push:
@@ -49,6 +51,28 @@ jobs:
       - name: Build (analyze + test + assemble + zip)
         shell: pwsh
         run: ./build.ps1 -Version ${{ steps.ver.outputs.version }}
+
+      - name: Publish to PowerShell Gallery
+        shell: pwsh
+        env:
+          PSGALLERY_API_KEY: ${{ secrets.PSGALLERY_API_KEY }}
+        run: |
+          $ver = '${{ steps.ver.outputs.version }}'
+          $path = "artifacts/JEnv/$ver"
+          if (-not (Test-Path -LiteralPath $path)) { throw "Staged module not found at '$path'." }
+          if (-not $env:PSGALLERY_API_KEY) {
+            Write-Warning 'PSGALLERY_API_KEY not set; skipping PSGallery publish.'
+            return
+          }
+          # PSGallery versions are immutable; skip instead of failing on re-runs.
+          $existing = Find-Module -Name JEnv -Repository PSGallery -RequiredVersion $ver -ErrorAction SilentlyContinue
+          if ($existing) {
+            Write-Host "JEnv $ver already on PowerShell Gallery; skipping."
+            return
+          }
+          Write-Host "Publishing JEnv $ver to PowerShell Gallery..."
+          Publish-Module -Path $path -NuGetApiKey $env:PSGALLERY_API_KEY -Repository PSGallery
+          Write-Host "Published JEnv $ver to PowerShell Gallery."
 
       - name: Install Inno Setup 7
         shell: pwsh
@@ -105,23 +129,6 @@ jobs:
             throw "Installer was not produced."
           }
 
-      - name: Hash installer and render WinGet manifest
-        id: pkg
-        shell: pwsh
-        run: |
-          $ver = '${{ steps.ver.outputs.version }}'
-          $exe = "packaging\Output\jenv-windows-$ver-setup.exe"
-          $hash = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash
-          "sha256=$hash" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-
-          $tmpl = Get-Content -Raw -LiteralPath packaging\winget\jenv.jenv-windows.yaml.template
-          $rendered = $tmpl.Replace('__VERSION__', $ver).Replace('__SHA256__', $hash)
-          New-Item -ItemType Directory -Force -Path packaging\winget\out | Out-Null
-          $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
-          [System.IO.File]::WriteAllText(
-            (Join-Path (Get-Location) 'packaging\winget\out\jenv.jenv-windows.yaml'),
-            $rendered, $utf8NoBom)
-
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -130,16 +137,5 @@ jobs:
           files: |
             packaging/Output/jenv-windows-${{ steps.ver.outputs.version }}-setup.exe
             artifacts/JEnv.${{ steps.ver.outputs.version }}.zip
-            packaging/winget/out/jenv.jenv-windows.yaml
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      # Optional: open a winget-pkgs PR automatically. Uncomment after the first
-      # (manual) submission establishes the PackageIdentifier.
-      # - name: Submit to winget-pkgs
-      #   uses: vedantmgoyal2009/winget-releaser@v2
-      #   with:
-      #     identifier: jenv-windows.jenv-windows
-      #     version: ${{ steps.ver.outputs.version }}
-      #     installers-regex: 'jenv-windows-.*-setup\.exe$'
-      #     token: ${{ secrets.WINGET_TOKEN }}
